@@ -95,6 +95,7 @@ static void setup_ports(struct app_config *app_cfg, int cnt_ports)
 	char str_name[16];
 	uint16_t nb_rxd = PORT_RX_QUEUE_SIZE;
 	uint16_t nb_txd = PORT_TX_QUEUE_SIZE;
+	int ret;
 
 	memset(&cfg_port, 0, sizeof(cfg_port));
 	cfg_port.txmode.mq_mode = ETH_MQ_TX_NONE;
@@ -102,7 +103,12 @@ static void setup_ports(struct app_config *app_cfg, int cnt_ports)
 	for (idx_port = 0; idx_port < cnt_ports; idx_port++) {
 		struct app_port *ptr_port = &app_cfg->ports[idx_port];
 
-		rte_eth_dev_info_get(idx_port, &dev_info);
+		ret = rte_eth_dev_info_get(idx_port, &dev_info);
+		if (ret != 0)
+			rte_exit(EXIT_FAILURE,
+				"Error during getting device (port %u) info: %s\n",
+				idx_port, strerror(-ret));
+
 		size_pktpool = dev_info.rx_desc_lim.nb_max +
 			dev_info.tx_desc_lim.nb_max + PKTPOOL_EXTRA_SIZE;
 
@@ -150,7 +156,12 @@ static void setup_ports(struct app_config *app_cfg, int cnt_ports)
 				 "%s:%i: rte_eth_dev_start failed",
 				 __FILE__, __LINE__
 				);
-		rte_eth_macaddr_get(idx_port, &ptr_port->mac_addr);
+		ret = rte_eth_macaddr_get(idx_port, &ptr_port->mac_addr);
+		if (ret != 0)
+			rte_exit(EXIT_FAILURE,
+				"rte_eth_macaddr_get failed (port %u): %s\n",
+				idx_port, rte_strerror(-ret));
+
 		rte_spinlock_init(&ptr_port->lock);
 	}
 }
@@ -165,7 +176,7 @@ static void process_frame(struct app_port *ptr_port,
 	rte_ether_addr_copy(&ptr_port->mac_addr, &ptr_mac_hdr->s_addr);
 }
 
-static int slave_main(__attribute__((unused)) void *ptr_data)
+static int worker_main(__rte_unused void *ptr_data)
 {
 	struct app_port *ptr_port;
 	struct rte_mbuf *ptr_frame;
@@ -176,6 +187,7 @@ static int slave_main(__attribute__((unused)) void *ptr_data)
 	uint16_t cnt_sent;
 	uint16_t idx_port;
 	uint16_t lock_result;
+	int ret;
 
 	while (app_cfg.exit_now == 0) {
 		for (idx_port = 0; idx_port < app_cfg.cnt_ports; idx_port++) {
@@ -192,8 +204,16 @@ static int slave_main(__attribute__((unused)) void *ptr_data)
 
 			/* MAC address was updated */
 			if (ptr_port->port_dirty == 1) {
-				rte_eth_macaddr_get(ptr_port->idx_port,
+				ret = rte_eth_macaddr_get(ptr_port->idx_port,
 					&ptr_port->mac_addr);
+				if (ret != 0) {
+					rte_spinlock_unlock(&ptr_port->lock);
+					printf("Failed to get MAC address (port %u): %s",
+					       ptr_port->idx_port,
+					       rte_strerror(-ret));
+					return ret;
+				}
+
 				ptr_port->port_dirty = 0;
 			}
 
@@ -264,16 +284,17 @@ int main(int argc, char **argv)
 	app_cfg.cnt_ports = cnt_ports;
 
 	if (rte_lcore_count() < 2)
-		rte_exit(EXIT_FAILURE, "No available slave core!\n");
-	/* Assume there is an available slave.. */
+		rte_exit(EXIT_FAILURE, "No available worker core!\n");
+
+	/* Assume there is an available worker.. */
 	id_core = rte_lcore_id();
 	id_core = rte_get_next_lcore(id_core, 1, 1);
-	rte_eal_remote_launch(slave_main, NULL, id_core);
+	rte_eal_remote_launch(worker_main, NULL, id_core);
 
 	ethapp_main();
 
 	app_cfg.exit_now = 1;
-	RTE_LCORE_FOREACH_SLAVE(id_core) {
+	RTE_LCORE_FOREACH_WORKER(id_core) {
 		if (rte_eal_wait_lcore(id_core) < 0)
 			return -1;
 	}

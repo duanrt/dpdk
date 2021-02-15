@@ -13,6 +13,9 @@
 #define HINIC_INTR_MSI_BAR	2
 #define HINIC_DB_MEM_BAR	4
 
+#define PAGE_SIZE_4K		0x1000
+#define PAGE_SIZE_64K		0x10000
+
 #define	HINIC_MSIX_CNT_RESEND_TIMER_SHIFT	29
 #define	HINIC_MSIX_CNT_RESEND_TIMER_MASK	0x7U
 
@@ -24,15 +27,20 @@
  * hwif_ready - test if the HW initialization passed
  * @hwdev: the pointer to the private hardware device object
  * Return: 0 - success, negative - failure
- **/
+ */
 static int hwif_ready(struct hinic_hwdev *hwdev)
 {
-	u32 addr, attr1;
+	u32 addr, attr0, attr1;
 
 	addr   = HINIC_CSR_FUNC_ATTR1_ADDR;
 	attr1  = hinic_hwif_read_reg(hwdev->hwif, addr);
-
 	if (!HINIC_AF1_GET(attr1, MGMT_INIT_STATUS))
+		return -EBUSY;
+
+	addr   = HINIC_CSR_FUNC_ATTR0_ADDR;
+	attr0  = hinic_hwif_read_reg(hwdev->hwif, addr);
+	if ((HINIC_AF0_GET(attr0, FUNC_TYPE) == TYPE_VF) &&
+	     !HINIC_AF1_GET(attr1, PF_INIT_STATUS))
 		return -EBUSY;
 
 	return 0;
@@ -44,7 +52,7 @@ static int hwif_ready(struct hinic_hwdev *hwdev)
  * @attr0: the first attribute that was read from the hw
  * @attr1: the second attribute that was read from the hw
  * @attr2: the third attribute that was read from the hw
- **/
+ */
 static void set_hwif_attr(struct hinic_hwif *hwif, u32 attr0, u32 attr1,
 			  u32 attr2)
 {
@@ -68,7 +76,7 @@ static void set_hwif_attr(struct hinic_hwif *hwif, u32 attr0, u32 attr1,
 /**
  * get_hwif_attr - read and set the attributes as members in hwif
  * @hwif: the hardware interface of a pci function device
- **/
+ */
 static void get_hwif_attr(struct hinic_hwif *hwif)
 {
 	u32 addr, attr0, attr1, attr2;
@@ -89,6 +97,11 @@ void hinic_set_pf_status(struct hinic_hwif *hwif, enum hinic_pf_status status)
 {
 	u32 attr5 = HINIC_AF5_SET(status, PF_STATUS);
 	u32 addr  = HINIC_CSR_FUNC_ATTR5_ADDR;
+
+	if (hwif->attr.func_type == TYPE_VF) {
+		PMD_DRV_LOG(INFO, "VF doesn't support to set attr5");
+		return;
+	}
 
 	hinic_hwif_write_reg(hwif, addr, attr5);
 }
@@ -145,7 +158,7 @@ void hinic_disable_doorbell(struct hinic_hwif *hwif)
 /**
  * set_ppf - try to set hwif as ppf and set the type of hwif in this case
  * @hwif: the hardware interface of a pci function device
- **/
+ */
 static void set_ppf(struct hinic_hwif *hwif)
 {
 	struct hinic_func_attr *attr = &hwif->attr;
@@ -170,17 +183,19 @@ static void set_ppf(struct hinic_hwif *hwif)
 		attr->func_type = TYPE_PPF;
 }
 
-static void init_db_area_idx(struct hinic_free_db_area *free_db_area)
+static void init_db_area_idx(struct hinic_hwif *hwif)
 {
+	struct hinic_free_db_area *free_db_area = &hwif->free_db_area;
+	u32 db_max_areas = hwif->db_max_areas;
 	u32 i;
 
-	for (i = 0; i < HINIC_DB_MAX_AREAS; i++)
+	for (i = 0; i < db_max_areas; i++)
 		free_db_area->db_idx[i] = i;
 
 	free_db_area->alloc_pos = 0;
 	free_db_area->return_pos = 0;
 
-	free_db_area->num_free = HINIC_DB_MAX_AREAS;
+	free_db_area->num_free = db_max_areas;
 
 	spin_lock_init(&free_db_area->idx_lock);
 }
@@ -201,7 +216,7 @@ static int get_db_idx(struct hinic_hwif *hwif, u32 *idx)
 	free_db_area->num_free--;
 
 	pos = free_db_area->alloc_pos++;
-	pos &= HINIC_DB_MAX_AREAS - 1;
+	pos &= (hwif->db_max_areas - 1);
 
 	pg_idx = free_db_area->db_idx[pos];
 
@@ -222,7 +237,7 @@ static void free_db_idx(struct hinic_hwif *hwif, u32 idx)
 	spin_lock(&free_db_area->idx_lock);
 
 	pos = free_db_area->return_pos++;
-	pos &= HINIC_DB_MAX_AREAS - 1;
+	pos &= (hwif->db_max_areas - 1);
 
 	free_db_area->db_idx[pos] = idx;
 
@@ -265,7 +280,7 @@ void hinic_set_msix_state(void *hwdev, u16 msix_idx, enum hinic_msix_state flag)
 	/* vfio-pci does not mmap msi-x vector table to user space,
 	 * we can not access the space when kernel driver is vfio-pci
 	 */
-	if (hw->pcidev_hdl->kdrv == RTE_KDRV_VFIO)
+	if (hw->pcidev_hdl->kdrv == RTE_PCI_KDRV_VFIO)
 		return;
 
 	mask_bits = readl(hwif->intr_regs_base + offset);
@@ -283,6 +298,30 @@ static void disable_all_msix(struct hinic_hwdev *hwdev)
 
 	for (i = 0; i < num_irqs; i++)
 		hinic_set_msix_state(hwdev, i, HINIC_MSIX_DISABLE);
+}
+
+/**
+ * Wait for up enable or disable doorbell flush finished.
+ * @hwif: the hardware interface of a pci function device.
+ * @states: Disable or Enable.
+ */
+int wait_until_doorbell_flush_states(struct hinic_hwif *hwif,
+					enum hinic_doorbell_ctrl states)
+{
+	unsigned long end;
+	enum hinic_doorbell_ctrl db_ctrl;
+
+	end = jiffies +
+		msecs_to_jiffies(HINIC_WAIT_DOORBELL_AND_OUTBOUND_TIMEOUT);
+	do {
+		db_ctrl = hinic_get_doorbell_ctrl_status(hwif);
+		if (db_ctrl == states)
+			return 0;
+
+		rte_delay_ms(1);
+	} while (time_before(jiffies, end));
+
+	return -ETIMEDOUT;
 }
 
 static int wait_until_doorbell_and_outbound_enabled(struct hinic_hwif *hwif)
@@ -304,7 +343,7 @@ static int wait_until_doorbell_and_outbound_enabled(struct hinic_hwif *hwif)
 		rte_delay_ms(1);
 	} while (time_before(jiffies, end));
 
-	return -EFAULT;
+	return -ETIMEDOUT;
 }
 
 u16 hinic_global_func_id(void *hwdev)
@@ -329,6 +368,17 @@ u8 hinic_ppf_idx(void *hwdev)
 }
 
 /**
+ * hinic_dma_attr_entry_num - get number id of DMA attribute table.
+ * @hwdev: the pointer to the private hardware device object.
+ * Return: The number id of DMA attribute table.
+ */
+u8 hinic_dma_attr_entry_num(void *hwdev)
+{
+	struct hinic_hwif *hwif = ((struct hinic_hwdev *)hwdev)->hwif;
+	return hwif->attr.num_dma_attr;
+}
+
+/**
  * hinic_init_hwif - initialize the hw interface
  * @hwdev: the pointer to the private hardware device object
  * @cfg_reg_base: base physical address of configuration registers
@@ -337,13 +387,18 @@ u8 hinic_ppf_idx(void *hwdev)
  * @db_base: base virtual address of doorbell registers
  * @dwqe_mapping: direct wqe io mapping address
  * Return: 0 - success, negative - failure
- **/
+ */
 static int hinic_init_hwif(struct hinic_hwdev *hwdev, void *cfg_reg_base,
 		    void *intr_reg_base, u64 db_base_phy,
 		    void *db_base, __rte_unused void *dwqe_mapping)
 {
 	struct hinic_hwif *hwif;
+	struct rte_pci_device *pci_dev;
+	u64 db_bar_len;
 	int err;
+
+	pci_dev = (struct rte_pci_device *)(hwdev->pcidev_hdl);
+	db_bar_len = pci_dev->mem_resource[HINIC_DB_MEM_BAR].len;
 
 	hwif = hwdev->hwif;
 
@@ -352,7 +407,11 @@ static int hinic_init_hwif(struct hinic_hwdev *hwdev, void *cfg_reg_base,
 
 	hwif->db_base_phy = db_base_phy;
 	hwif->db_base = (u8 __iomem *)db_base;
-	init_db_area_idx(&hwif->free_db_area);
+	hwif->db_max_areas = db_bar_len / HINIC_DB_PAGE_SIZE;
+	if (hwif->db_max_areas > HINIC_DB_MAX_AREAS)
+		hwif->db_max_areas = HINIC_DB_MAX_AREAS;
+
+	init_db_area_idx(hwif);
 
 	get_hwif_attr(hwif);
 
@@ -371,6 +430,9 @@ static int hinic_init_hwif(struct hinic_hwdev *hwdev, void *cfg_reg_base,
 	if (!HINIC_IS_VF(hwdev))
 		set_ppf(hwif);
 
+	/* disable mgmt cpu report any event */
+	hinic_set_pf_status(hwdev->hwif, HINIC_PF_STATUS_INIT);
+
 	return 0;
 
 hwif_ready_err:
@@ -388,8 +450,8 @@ static void hinic_parse_hwif_attr(struct hinic_hwdev *hwdev)
 	struct hinic_hwif *hwif = hwdev->hwif;
 
 	PMD_DRV_LOG(INFO, "Device %s hwif attribute:", hwdev->pcidev_hdl->name);
-	PMD_DRV_LOG(INFO, "func_idx:%u, p2p_idx:%u, pciintf_idx:%u, "
-		    "vf_in_pf:%u, ppf_idx:%u, global_vf_id:%u, func_type:%u",
+	PMD_DRV_LOG(INFO, "func_idx: %u, p2p_idx: %u, pciintf_idx: %u, "
+		    "vf_in_pf: %u, ppf_idx: %u, global_vf_id: %u, func_type: %u",
 		    hwif->attr.func_global_idx,
 		    hwif->attr.port_to_port_idx, hwif->attr.pci_intf_idx,
 		    hwif->attr.vf_in_pf, hwif->attr.ppf_idx,
@@ -403,10 +465,28 @@ static void hinic_get_mmio(struct hinic_hwdev *hwdev, void **cfg_regs_base,
 			   void **intr_base, void **db_base)
 {
 	struct rte_pci_device *pci_dev = hwdev->pcidev_hdl;
+	uint64_t bar0_size;
+	uint64_t bar2_size;
+	uint64_t bar0_phy_addr;
+	uint64_t pagesize = sysconf(_SC_PAGESIZE);
 
 	*cfg_regs_base = pci_dev->mem_resource[HINIC_CFG_REGS_BAR].addr;
 	*intr_base = pci_dev->mem_resource[HINIC_INTR_MSI_BAR].addr;
 	*db_base = pci_dev->mem_resource[HINIC_DB_MEM_BAR].addr;
+
+	bar0_size = pci_dev->mem_resource[HINIC_CFG_REGS_BAR].len;
+	bar2_size = pci_dev->mem_resource[HINIC_INTR_MSI_BAR].len;
+
+	if (pagesize == PAGE_SIZE_64K && (bar0_size % pagesize != 0)) {
+		bar0_phy_addr =
+			pci_dev->mem_resource[HINIC_CFG_REGS_BAR].phys_addr;
+		if (bar0_phy_addr % pagesize != 0 &&
+		(bar0_size + bar2_size <= pagesize) &&
+		bar2_size >= bar0_size) {
+			*cfg_regs_base = (void *)((uint8_t *)(*intr_base)
+				+ bar2_size);
+		}
+	}
 }
 
 void hinic_hwif_res_free(struct hinic_hwdev *hwdev)
@@ -459,7 +539,7 @@ init_hwif_err:
  * @hwdev: the hardware interface of a nic device
  * @msix_idx: Index of msix interrupt
  * @clear_resend_en: enable flag of clear resend configuration
- **/
+ */
 void hinic_misx_intr_clear_resend_bit(void *hwdev, u16 msix_idx,
 				      u8 clear_resend_en)
 {

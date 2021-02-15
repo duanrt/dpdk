@@ -29,6 +29,7 @@ ice_rx_reassemble_packets(struct ice_rx_queue *rxq, struct rte_mbuf **rx_bufs,
 			if (!split_flags[buf_idx]) {
 				/* it's the last packet of the set */
 				start->hash = end->hash;
+				start->vlan_tci = end->vlan_tci;
 				start->ol_flags = end->ol_flags;
 				/* we need to strip crc for the whole packet */
 				start->pkt_len -= rxq->crc_len;
@@ -188,16 +189,38 @@ _ice_tx_queue_release_mbufs_vec(struct ice_tx_queue *txq)
 	 *  so need to free remains more carefully.
 	 */
 	i = txq->tx_next_dd - txq->tx_rs_thresh + 1;
-	if (txq->tx_tail < i) {
-		for (; i < txq->nb_tx_desc; i++) {
+
+#ifdef CC_AVX512_SUPPORT
+	struct rte_eth_dev *dev = txq->vsi->adapter->eth_dev;
+
+	if (dev->tx_pkt_burst == ice_xmit_pkts_vec_avx512) {
+		struct ice_vec_tx_entry *swr = (void *)txq->sw_ring;
+
+		if (txq->tx_tail < i) {
+			for (; i < txq->nb_tx_desc; i++) {
+				rte_pktmbuf_free_seg(swr[i].mbuf);
+				swr[i].mbuf = NULL;
+			}
+			i = 0;
+		}
+		for (; i < txq->tx_tail; i++) {
+			rte_pktmbuf_free_seg(swr[i].mbuf);
+			swr[i].mbuf = NULL;
+		}
+	} else
+#endif
+	{
+		if (txq->tx_tail < i) {
+			for (; i < txq->nb_tx_desc; i++) {
+				rte_pktmbuf_free_seg(txq->sw_ring[i].mbuf);
+				txq->sw_ring[i].mbuf = NULL;
+			}
+			i = 0;
+		}
+		for (; i < txq->tx_tail; i++) {
 			rte_pktmbuf_free_seg(txq->sw_ring[i].mbuf);
 			txq->sw_ring[i].mbuf = NULL;
 		}
-		i = 0;
-	}
-	for (; i < txq->tx_tail; i++) {
-		rte_pktmbuf_free_seg(txq->sw_ring[i].mbuf);
-		txq->sw_ring[i].mbuf = NULL;
 	}
 }
 
@@ -234,14 +257,19 @@ ice_rx_vec_queue_default(struct ice_rx_queue *rxq)
 	if (rxq->nb_rx_desc % rxq->rx_free_thresh)
 		return -1;
 
+	if (rxq->proto_xtr != PROTO_XTR_NONE)
+		return -1;
+
 	return 0;
 }
 
 #define ICE_NO_VECTOR_FLAGS (				 \
 		DEV_TX_OFFLOAD_MULTI_SEGS |		 \
 		DEV_TX_OFFLOAD_VLAN_INSERT |		 \
+		DEV_TX_OFFLOAD_IPV4_CKSUM |		 \
 		DEV_TX_OFFLOAD_SCTP_CKSUM |		 \
 		DEV_TX_OFFLOAD_UDP_CKSUM |		 \
+		DEV_TX_OFFLOAD_TCP_TSO |		 \
 		DEV_TX_OFFLOAD_TCP_CKSUM)
 
 static inline int

@@ -1,40 +1,15 @@
-/*-
-* BSD LICENSE
-*
-* Copyright (c) 2015-2016 Amazon.com, Inc. or its affiliates.
-* All rights reserved.
-*
-* Redistribution and use in source and binary forms, with or without
-* modification, are permitted provided that the following conditions
-* are met:
-*
-* * Redistributions of source code must retain the above copyright
-* notice, this list of conditions and the following disclaimer.
-* * Redistributions in binary form must reproduce the above copyright
-* notice, this list of conditions and the following disclaimer in
-* the documentation and/or other materials provided with the
-* distribution.
-* * Neither the name of copyright holder nor the names of its
-* contributors may be used to endorse or promote products derived
-* from this software without specific prior written permission.
-*
-* THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-* "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-* LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-* A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-* OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-* SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-* LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-* DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-* THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-* (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-* OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-*/
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright (c) 2015-2020 Amazon.com, Inc. or its affiliates.
+ * All rights reserved.
+ */
+
 #ifndef _ENA_ADMIN_H_
 #define _ENA_ADMIN_H_
 
 #define ENA_ADMIN_EXTRA_PROPERTIES_STRING_LEN 32
 #define ENA_ADMIN_EXTRA_PROPERTIES_COUNT     32
+
+#define ENA_ADMIN_RSS_KEY_PARTS              10
 
 enum ena_admin_aq_opcode {
 	ENA_ADMIN_CREATE_SQ                         = 1,
@@ -122,6 +97,8 @@ enum ena_admin_completion_policy_type {
 enum ena_admin_get_stats_type {
 	ENA_ADMIN_GET_STATS_TYPE_BASIC              = 0,
 	ENA_ADMIN_GET_STATS_TYPE_EXTENDED           = 1,
+	/* extra HW stats for specific network interface */
+	ENA_ADMIN_GET_STATS_TYPE_ENI                = 2,
 };
 
 enum ena_admin_get_stats_scope {
@@ -409,12 +386,49 @@ struct ena_admin_basic_stats {
 	uint32_t rx_drops_low;
 
 	uint32_t rx_drops_high;
+
+	uint32_t tx_drops_low;
+
+	uint32_t tx_drops_high;
+};
+
+/* ENI Statistics Command. */
+struct ena_admin_eni_stats {
+	/* The number of packets shaped due to inbound aggregate BW
+	 * allowance being exceeded
+	 */
+	uint64_t bw_in_allowance_exceeded;
+
+	/* The number of packets shaped due to outbound aggregate BW
+	 * allowance being exceeded
+	 */
+	uint64_t bw_out_allowance_exceeded;
+
+	/* The number of packets shaped due to PPS allowance being exceeded */
+	uint64_t pps_allowance_exceeded;
+
+	/* The number of packets shaped due to connection tracking
+	 * allowance being exceeded and leading to failure in establishment
+	 * of new connections
+	 */
+	uint64_t conntrack_allowance_exceeded;
+
+	/* The number of packets shaped due to linklocal packet rate
+	 * allowance being exceeded
+	 */
+	uint64_t linklocal_allowance_exceeded;
 };
 
 struct ena_admin_acq_get_stats_resp {
 	struct ena_admin_acq_common_desc acq_common_desc;
 
-	struct ena_admin_basic_stats basic_stats;
+	union {
+		uint64_t raw[7];
+
+		struct ena_admin_basic_stats basic_stats;
+
+		struct ena_admin_eni_stats eni_stats;
+	} u;
 };
 
 struct ena_admin_get_set_feature_common_desc {
@@ -492,6 +506,36 @@ enum ena_admin_llq_stride_ctrl {
 	ENA_ADMIN_MULTIPLE_DESCS_PER_ENTRY          = 2,
 };
 
+enum ena_admin_accel_mode_feat {
+	ENA_ADMIN_DISABLE_META_CACHING              = 0,
+	ENA_ADMIN_LIMIT_TX_BURST                    = 1,
+};
+
+struct ena_admin_accel_mode_get {
+	/* bit field of enum ena_admin_accel_mode_feat */
+	uint16_t supported_flags;
+
+	/* maximum burst size between two doorbells. The size is in bytes */
+	uint16_t max_tx_burst_size;
+};
+
+struct ena_admin_accel_mode_set {
+	/* bit field of enum ena_admin_accel_mode_feat */
+	uint16_t enabled_flags;
+
+	uint16_t reserved;
+};
+
+struct ena_admin_accel_mode_req {
+	union {
+		uint32_t raw[2];
+
+		struct ena_admin_accel_mode_get get;
+
+		struct ena_admin_accel_mode_set set;
+	} u;
+};
+
 struct ena_admin_feature_llq_desc {
 	uint32_t max_llq_num;
 
@@ -537,10 +581,13 @@ struct ena_admin_feature_llq_desc {
 	/* the stride control the driver selected to use */
 	uint16_t descriptors_stride_ctrl_enabled;
 
-	/* Maximum size in bytes taken by llq entries in a single tx burst.
-	 * Set to 0 when there is no such limit.
+	/* reserved */
+	uint32_t reserved1;
+
+	/* accelerated low latency queues requirement. Driver needs to
+	 * support those requirements in order to use accelerated LLQ
 	 */
-	uint32_t max_tx_burst_size;
+	struct ena_admin_accel_mode_req accel_mode;
 };
 
 struct ena_admin_queue_ext_feature_fields {
@@ -687,7 +734,7 @@ struct ena_admin_feature_rss_flow_hash_control {
 
 	uint32_t reserved;
 
-	uint32_t key[10];
+	uint32_t key[ENA_ADMIN_RSS_KEY_PARTS];
 };
 
 struct ena_admin_feature_rss_flow_hash_function {
@@ -821,6 +868,15 @@ struct ena_admin_host_info {
 	uint16_t num_cpus;
 
 	uint16_t reserved;
+
+	/* 0 : mutable_rss_table_size
+	 * 1 : rx_offset
+	 * 2 : interrupt_moderation
+	 * 3 : map_rx_buf_bidirectional
+	 * 4 : rss_configurable_function_key
+	 * 31:5 : reserved
+	 */
+	uint32_t driver_supported_features;
 };
 
 struct ena_admin_rss_ind_table_entry {
@@ -839,8 +895,8 @@ struct ena_admin_feature_rss_ind_table {
 	/* table size (2^size) */
 	uint16_t size;
 
-	/* 0 : one_entry_update - The FW supports setting a
-	 *    single RSS table entry
+	/* 0 : one_entry_update - The ENA device supports
+	 *    setting a single RSS table entry
 	 */
 	uint8_t flags;
 
@@ -1033,6 +1089,10 @@ struct ena_admin_aenq_keep_alive_desc {
 	uint32_t rx_drops_low;
 
 	uint32_t rx_drops_high;
+
+	uint32_t tx_drops_low;
+
+	uint32_t tx_drops_high;
 };
 
 struct ena_admin_ena_mmio_req_read_less_resp {
@@ -1132,6 +1192,15 @@ struct ena_admin_ena_mmio_req_read_less_resp {
 #define ENA_ADMIN_HOST_INFO_DEVICE_MASK                     GENMASK(7, 3)
 #define ENA_ADMIN_HOST_INFO_BUS_SHIFT                       8
 #define ENA_ADMIN_HOST_INFO_BUS_MASK                        GENMASK(15, 8)
+#define ENA_ADMIN_HOST_INFO_MUTABLE_RSS_TABLE_SIZE_MASK     BIT(0)
+#define ENA_ADMIN_HOST_INFO_RX_OFFSET_SHIFT                 1
+#define ENA_ADMIN_HOST_INFO_RX_OFFSET_MASK                  BIT(1)
+#define ENA_ADMIN_HOST_INFO_INTERRUPT_MODERATION_SHIFT      2
+#define ENA_ADMIN_HOST_INFO_INTERRUPT_MODERATION_MASK       BIT(2)
+#define ENA_ADMIN_HOST_INFO_MAP_RX_BUF_BIDIRECTIONAL_SHIFT  3
+#define ENA_ADMIN_HOST_INFO_MAP_RX_BUF_BIDIRECTIONAL_MASK   BIT(3)
+#define ENA_ADMIN_HOST_INFO_RSS_CONFIGURABLE_FUNCTION_KEY_SHIFT 4
+#define ENA_ADMIN_HOST_INFO_RSS_CONFIGURABLE_FUNCTION_KEY_MASK BIT(4)
 
 /* feature_rss_ind_table */
 #define ENA_ADMIN_FEATURE_RSS_IND_TABLE_ONE_ENTRY_UPDATE_MASK BIT(0)
@@ -1553,6 +1622,56 @@ static inline void set_ena_admin_host_info_bus(struct ena_admin_host_info *p, ui
 	p->bdf |= (val << ENA_ADMIN_HOST_INFO_BUS_SHIFT) & ENA_ADMIN_HOST_INFO_BUS_MASK;
 }
 
+static inline uint32_t get_ena_admin_host_info_mutable_rss_table_size(const struct ena_admin_host_info *p)
+{
+	return p->driver_supported_features & ENA_ADMIN_HOST_INFO_MUTABLE_RSS_TABLE_SIZE_MASK;
+}
+
+static inline void set_ena_admin_host_info_mutable_rss_table_size(struct ena_admin_host_info *p, uint32_t val)
+{
+	p->driver_supported_features |= val & ENA_ADMIN_HOST_INFO_MUTABLE_RSS_TABLE_SIZE_MASK;
+}
+
+static inline uint32_t get_ena_admin_host_info_rx_offset(const struct ena_admin_host_info *p)
+{
+	return (p->driver_supported_features & ENA_ADMIN_HOST_INFO_RX_OFFSET_MASK) >> ENA_ADMIN_HOST_INFO_RX_OFFSET_SHIFT;
+}
+
+static inline void set_ena_admin_host_info_rx_offset(struct ena_admin_host_info *p, uint32_t val)
+{
+	p->driver_supported_features |= (val << ENA_ADMIN_HOST_INFO_RX_OFFSET_SHIFT) & ENA_ADMIN_HOST_INFO_RX_OFFSET_MASK;
+}
+
+static inline uint32_t get_ena_admin_host_info_interrupt_moderation(const struct ena_admin_host_info *p)
+{
+	return (p->driver_supported_features & ENA_ADMIN_HOST_INFO_INTERRUPT_MODERATION_MASK) >> ENA_ADMIN_HOST_INFO_INTERRUPT_MODERATION_SHIFT;
+}
+
+static inline void set_ena_admin_host_info_interrupt_moderation(struct ena_admin_host_info *p, uint32_t val)
+{
+	p->driver_supported_features |= (val << ENA_ADMIN_HOST_INFO_INTERRUPT_MODERATION_SHIFT) & ENA_ADMIN_HOST_INFO_INTERRUPT_MODERATION_MASK;
+}
+
+static inline uint32_t get_ena_admin_host_info_map_rx_buf_bidirectional(const struct ena_admin_host_info *p)
+{
+	return (p->driver_supported_features & ENA_ADMIN_HOST_INFO_MAP_RX_BUF_BIDIRECTIONAL_MASK) >> ENA_ADMIN_HOST_INFO_MAP_RX_BUF_BIDIRECTIONAL_SHIFT;
+}
+
+static inline void set_ena_admin_host_info_map_rx_buf_bidirectional(struct ena_admin_host_info *p, uint32_t val)
+{
+	p->driver_supported_features |= (val << ENA_ADMIN_HOST_INFO_MAP_RX_BUF_BIDIRECTIONAL_SHIFT) & ENA_ADMIN_HOST_INFO_MAP_RX_BUF_BIDIRECTIONAL_MASK;
+}
+
+static inline uint32_t get_ena_admin_host_info_rss_configurable_function_key(const struct ena_admin_host_info *p)
+{
+	return (p->driver_supported_features & ENA_ADMIN_HOST_INFO_RSS_CONFIGURABLE_FUNCTION_KEY_MASK) >> ENA_ADMIN_HOST_INFO_RSS_CONFIGURABLE_FUNCTION_KEY_SHIFT;
+}
+
+static inline void set_ena_admin_host_info_rss_configurable_function_key(struct ena_admin_host_info *p, uint32_t val)
+{
+	p->driver_supported_features |= (val << ENA_ADMIN_HOST_INFO_RSS_CONFIGURABLE_FUNCTION_KEY_SHIFT) & ENA_ADMIN_HOST_INFO_RSS_CONFIGURABLE_FUNCTION_KEY_MASK;
+}
+
 static inline uint8_t get_ena_admin_feature_rss_ind_table_one_entry_update(const struct ena_admin_feature_rss_ind_table *p)
 {
 	return p->flags & ENA_ADMIN_FEATURE_RSS_IND_TABLE_ONE_ENTRY_UPDATE_MASK;
@@ -1584,4 +1703,4 @@ static inline void set_ena_admin_aenq_link_change_desc_link_status(struct ena_ad
 }
 
 #endif /* !defined(DEFS_LINUX_MAINLINE) */
-#endif /*_ENA_ADMIN_H_ */
+#endif /* _ENA_ADMIN_H_ */

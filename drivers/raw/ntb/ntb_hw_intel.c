@@ -25,17 +25,29 @@ static enum xeon_ntb_bar intel_ntb_bar[] = {
 	XEON_NTB_BAR45,
 };
 
-static int
-intel_ntb_dev_init(struct rte_rawdev *dev)
+static inline int
+is_gen3_ntb(const struct ntb_hw *hw)
 {
-	struct ntb_hw *hw = dev->dev_private;
-	uint8_t reg_val, bar;
-	int ret, i;
+	if (hw->pci_dev->id.device_id == NTB_INTEL_DEV_ID_B2B_SKX)
+		return 1;
 
-	if (hw == NULL) {
-		NTB_LOG(ERR, "Invalid device.");
-		return -EINVAL;
-	}
+	return 0;
+}
+
+static inline int
+is_gen4_ntb(const struct ntb_hw *hw)
+{
+	if (hw->pci_dev->id.device_id == NTB_INTEL_DEV_ID_B2B_ICX)
+		return 1;
+
+	return 0;
+}
+
+static int
+intel_ntb3_check_ppd(struct ntb_hw *hw)
+{
+	uint8_t reg_val;
+	int ret;
 
 	ret = rte_pci_read_config(hw->pci_dev, &reg_val,
 				  sizeof(reg_val), XEON_PPD_OFFSET);
@@ -71,13 +83,70 @@ intel_ntb_dev_init(struct rte_rawdev *dev)
 		return -EINVAL;
 	}
 
+	return 0;
+}
+
+static int
+intel_ntb4_check_ppd(struct ntb_hw *hw)
+{
+	uint32_t reg_val;
+
+	reg_val = rte_read32(hw->hw_addr + XEON_GEN4_PPD1_OFFSET);
+
+	/* Check connection topo type. Only support B2B. */
+	switch (reg_val & XEON_GEN4_PPD_CONN_MASK) {
+	case XEON_GEN4_PPD_CONN_B2B:
+		NTB_LOG(INFO, "Topo B2B (back to back) is using.");
+		break;
+	default:
+		NTB_LOG(ERR, "Not supported conn topo. Please use B2B.");
+		return -EINVAL;
+	}
+
+	/* Check device type. */
+	if (reg_val & XEON_GEN4_PPD_DEV_DSD) {
+		NTB_LOG(INFO, "DSD, Downstream Device.");
+		hw->topo = NTB_TOPO_B2B_DSD;
+	} else {
+		NTB_LOG(INFO, "USD, Upstream device.");
+		hw->topo = NTB_TOPO_B2B_USD;
+	}
+
+	return 0;
+}
+
+static int
+intel_ntb_dev_init(const struct rte_rawdev *dev)
+{
+	struct ntb_hw *hw = dev->dev_private;
+	uint8_t bar;
+	int ret, i;
+
+	if (hw == NULL) {
+		NTB_LOG(ERR, "Invalid device.");
+		return -EINVAL;
+	}
+
 	hw->hw_addr = (char *)hw->pci_dev->mem_resource[0].addr;
+
+	if (is_gen3_ntb(hw))
+		ret = intel_ntb3_check_ppd(hw);
+	else if (is_gen4_ntb(hw))
+		/* PPD is in MMIO but not config space for NTB Gen4 */
+		ret = intel_ntb4_check_ppd(hw);
+	else {
+		NTB_LOG(ERR, "Cannot init device for unsupported device.");
+		return -ENOTSUP;
+	}
+
+	if (ret)
+		return ret;
 
 	hw->mw_cnt = XEON_MW_COUNT;
 	hw->db_cnt = XEON_DB_COUNT;
 	hw->spad_cnt = XEON_SPAD_COUNT;
 
-	hw->mw_size = rte_zmalloc("uint64_t",
+	hw->mw_size = rte_zmalloc("ntb_mw_size",
 				  hw->mw_cnt * sizeof(uint64_t), 0);
 	for (i = 0; i < hw->mw_cnt; i++) {
 		bar = intel_ntb_bar[i];
@@ -94,7 +163,7 @@ intel_ntb_dev_init(struct rte_rawdev *dev)
 }
 
 static void *
-intel_ntb_get_peer_mw_addr(struct rte_rawdev *dev, int mw_idx)
+intel_ntb_get_peer_mw_addr(const struct rte_rawdev *dev, int mw_idx)
 {
 	struct ntb_hw *hw = dev->dev_private;
 	uint8_t bar;
@@ -116,7 +185,7 @@ intel_ntb_get_peer_mw_addr(struct rte_rawdev *dev, int mw_idx)
 }
 
 static int
-intel_ntb_mw_set_trans(struct rte_rawdev *dev, int mw_idx,
+intel_ntb_mw_set_trans(const struct rte_rawdev *dev, int mw_idx,
 		       uint64_t addr, uint64_t size)
 {
 	struct ntb_hw *hw = dev->dev_private;
@@ -149,24 +218,59 @@ intel_ntb_mw_set_trans(struct rte_rawdev *dev, int mw_idx,
 	rte_write64(base, xlat_addr);
 	rte_write64(limit, limit_addr);
 
-	/* Setup the external point so that remote can access. */
-	xlat_off = XEON_EMBAR1_OFFSET + 8 * mw_idx;
-	xlat_addr = hw->hw_addr + xlat_off;
-	limit_off = XEON_EMBAR1XLMT_OFFSET + mw_idx * XEON_BAR_INTERVAL_OFFSET;
-	limit_addr = hw->hw_addr + limit_off;
-	base = rte_read64(xlat_addr);
-	base &= ~0xf;
-	limit = base + size;
-	rte_write64(limit, limit_addr);
+	if (is_gen3_ntb(hw)) {
+		/* Setup the external point so that remote can access. */
+		xlat_off = XEON_EMBAR1_OFFSET + 8 * mw_idx;
+		xlat_addr = hw->hw_addr + xlat_off;
+		limit_off = XEON_EMBAR1XLMT_OFFSET +
+			    mw_idx * XEON_BAR_INTERVAL_OFFSET;
+		limit_addr = hw->hw_addr + limit_off;
+		base = rte_read64(xlat_addr);
+		base &= ~0xf;
+		limit = base + size;
+		rte_write64(limit, limit_addr);
+	} else if (is_gen4_ntb(hw)) {
+		/* Set translate base address index register */
+		xlat_off = XEON_GEN4_IM1XBASEIDX_OFFSET +
+			   mw_idx * XEON_GEN4_XBASEIDX_INTERVAL;
+		xlat_addr = hw->hw_addr + xlat_off;
+		rte_write16(rte_log2_u64(size), xlat_addr);
+	} else {
+		NTB_LOG(ERR, "Cannot set translation of memory windows for unsupported device.");
+		rte_write64(base, limit_addr);
+		rte_write64(0, xlat_addr);
+		return -ENOTSUP;
+	}
 
 	return 0;
 }
 
-static int
-intel_ntb_get_link_status(struct rte_rawdev *dev)
+static void *
+intel_ntb_ioremap(const struct rte_rawdev *dev, uint64_t addr)
 {
 	struct ntb_hw *hw = dev->dev_private;
-	uint16_t reg_val;
+	void *mapped = NULL;
+	void *base;
+	int i;
+
+	for (i = 0; i < hw->peer_used_mws; i++) {
+		if (addr >= hw->peer_mw_base[i] &&
+		    addr <= hw->peer_mw_base[i] + hw->mw_size[i]) {
+			base = intel_ntb_get_peer_mw_addr(dev, i);
+			mapped = (void *)(size_t)(addr - hw->peer_mw_base[i] +
+				 (size_t)base);
+			break;
+		}
+	}
+
+	return mapped;
+}
+
+static int
+intel_ntb_get_link_status(const struct rte_rawdev *dev)
+{
+	struct ntb_hw *hw = dev->dev_private;
+	uint16_t reg_val, reg_off;
 	int ret;
 
 	if (hw == NULL) {
@@ -174,11 +278,20 @@ intel_ntb_get_link_status(struct rte_rawdev *dev)
 		return -EINVAL;
 	}
 
-	ret = rte_pci_read_config(hw->pci_dev, &reg_val,
-				  sizeof(reg_val), XEON_LINK_STATUS_OFFSET);
-	if (ret < 0) {
-		NTB_LOG(ERR, "Unable to get link status.");
-		return -EIO;
+	if (is_gen3_ntb(hw)) {
+		reg_off = XEON_GEN3_LINK_STATUS_OFFSET;
+		ret = rte_pci_read_config(hw->pci_dev, &reg_val,
+					  sizeof(reg_val), reg_off);
+		if (ret < 0) {
+			NTB_LOG(ERR, "Unable to get link status.");
+			return -EIO;
+		}
+	} else if (is_gen4_ntb(hw)) {
+		reg_off = XEON_GEN4_LINK_STATUS_OFFSET;
+		reg_val = rte_read16(hw->hw_addr + reg_off);
+	} else {
+		NTB_LOG(ERR, "Cannot get link status for unsupported device.");
+		return -ENOTSUP;
 	}
 
 	hw->link_status = NTB_LNK_STA_ACTIVE(reg_val);
@@ -195,9 +308,8 @@ intel_ntb_get_link_status(struct rte_rawdev *dev)
 }
 
 static int
-intel_ntb_set_link(struct rte_rawdev *dev, bool up)
+intel_ntb_gen3_set_link(const struct ntb_hw *hw, bool up)
 {
-	struct ntb_hw *hw = dev->dev_private;
 	uint32_t ntb_ctrl, reg_off;
 	void *reg_addr;
 
@@ -220,8 +332,72 @@ intel_ntb_set_link(struct rte_rawdev *dev, bool up)
 	return 0;
 }
 
+static int
+intel_ntb_gen4_set_link(const struct ntb_hw *hw, bool up)
+{
+	uint32_t ntb_ctrl, ppd0;
+	uint16_t link_ctrl;
+	void *reg_addr;
+
+	if (up) {
+		reg_addr = hw->hw_addr + XEON_NTBCNTL_OFFSET;
+		ntb_ctrl = NTB_CTL_P2S_BAR2_SNOOP | NTB_CTL_S2P_BAR2_SNOOP;
+		ntb_ctrl |= NTB_CTL_P2S_BAR4_SNOOP | NTB_CTL_S2P_BAR4_SNOOP;
+		rte_write32(ntb_ctrl, reg_addr);
+
+		reg_addr = hw->hw_addr + XEON_GEN4_LINK_CTRL_OFFSET;
+		link_ctrl = rte_read16(reg_addr);
+		link_ctrl &= ~XEON_GEN4_LINK_CTRL_LINK_DIS;
+		rte_write16(link_ctrl, reg_addr);
+
+		/* start link training */
+		reg_addr = hw->hw_addr + XEON_GEN4_PPD0_OFFSET;
+		ppd0 = rte_read32(reg_addr);
+		ppd0 |= XEON_GEN4_PPD_LINKTRN;
+		rte_write32(ppd0, reg_addr);
+
+		/* make sure link training has started */
+		ppd0 = rte_read32(reg_addr);
+		if (!(ppd0 & XEON_GEN4_PPD_LINKTRN)) {
+			NTB_LOG(ERR, "Link is not training.");
+			return -EINVAL;
+		}
+	} else {
+		reg_addr = hw->hw_addr + XEON_NTBCNTL_OFFSET;
+		ntb_ctrl = rte_read32(reg_addr);
+		ntb_ctrl &= ~(NTB_CTL_P2S_BAR2_SNOOP | NTB_CTL_S2P_BAR2_SNOOP);
+		ntb_ctrl &= ~(NTB_CTL_P2S_BAR4_SNOOP | NTB_CTL_S2P_BAR4_SNOOP);
+		rte_write32(ntb_ctrl, reg_addr);
+
+		reg_addr = hw->hw_addr + XEON_GEN4_LINK_CTRL_OFFSET;
+		link_ctrl = rte_read16(reg_addr);
+		link_ctrl |= XEON_GEN4_LINK_CTRL_LINK_DIS;
+		rte_write16(link_ctrl, reg_addr);
+	}
+
+	return 0;
+}
+
+static int
+intel_ntb_set_link(const struct rte_rawdev *dev, bool up)
+{
+	struct ntb_hw *hw = dev->dev_private;
+	int ret = 0;
+
+	if (is_gen3_ntb(hw))
+		ret = intel_ntb_gen3_set_link(hw, up);
+	else if (is_gen4_ntb(hw))
+		ret = intel_ntb_gen4_set_link(hw, up);
+	else {
+		NTB_LOG(ERR, "Cannot set link for unsupported device.");
+		ret = -ENOTSUP;
+	}
+
+	return ret;
+}
+
 static uint32_t
-intel_ntb_spad_read(struct rte_rawdev *dev, int spad, bool peer)
+intel_ntb_spad_read(const struct rte_rawdev *dev, int spad, bool peer)
 {
 	struct ntb_hw *hw = dev->dev_private;
 	uint32_t spad_v, reg_off;
@@ -233,7 +409,16 @@ intel_ntb_spad_read(struct rte_rawdev *dev, int spad, bool peer)
 	}
 
 	/* When peer is true, read peer spad reg */
-	reg_off = peer ? XEON_B2B_SPAD_OFFSET : XEON_IM_SPAD_OFFSET;
+	if (is_gen3_ntb(hw))
+		reg_off = peer ? XEON_GEN3_B2B_SPAD_OFFSET :
+				XEON_IM_SPAD_OFFSET;
+	else if (is_gen4_ntb(hw))
+		reg_off = peer ? XEON_GEN4_B2B_SPAD_OFFSET :
+				XEON_IM_SPAD_OFFSET;
+	else {
+		NTB_LOG(ERR, "Cannot read spad for unsupported device.");
+		return -ENOTSUP;
+	}
 	reg_addr = hw->hw_addr + reg_off + (spad << 2);
 	spad_v = rte_read32(reg_addr);
 
@@ -241,7 +426,7 @@ intel_ntb_spad_read(struct rte_rawdev *dev, int spad, bool peer)
 }
 
 static int
-intel_ntb_spad_write(struct rte_rawdev *dev, int spad,
+intel_ntb_spad_write(const struct rte_rawdev *dev, int spad,
 		     bool peer, uint32_t spad_v)
 {
 	struct ntb_hw *hw = dev->dev_private;
@@ -254,7 +439,16 @@ intel_ntb_spad_write(struct rte_rawdev *dev, int spad,
 	}
 
 	/* When peer is true, write peer spad reg */
-	reg_off = peer ? XEON_B2B_SPAD_OFFSET : XEON_IM_SPAD_OFFSET;
+	if (is_gen3_ntb(hw))
+		reg_off = peer ? XEON_GEN3_B2B_SPAD_OFFSET :
+				XEON_IM_SPAD_OFFSET;
+	else if (is_gen4_ntb(hw))
+		reg_off = peer ? XEON_GEN4_B2B_SPAD_OFFSET :
+				XEON_IM_SPAD_OFFSET;
+	else {
+		NTB_LOG(ERR, "Cannot write spad for unsupported device.");
+		return -ENOTSUP;
+	}
 	reg_addr = hw->hw_addr + reg_off + (spad << 2);
 
 	rte_write32(spad_v, reg_addr);
@@ -263,7 +457,7 @@ intel_ntb_spad_write(struct rte_rawdev *dev, int spad,
 }
 
 static uint64_t
-intel_ntb_db_read(struct rte_rawdev *dev)
+intel_ntb_db_read(const struct rte_rawdev *dev)
 {
 	struct ntb_hw *hw = dev->dev_private;
 	uint64_t db_off, db_bits;
@@ -278,7 +472,7 @@ intel_ntb_db_read(struct rte_rawdev *dev)
 }
 
 static int
-intel_ntb_db_clear(struct rte_rawdev *dev, uint64_t db_bits)
+intel_ntb_db_clear(const struct rte_rawdev *dev, uint64_t db_bits)
 {
 	struct ntb_hw *hw = dev->dev_private;
 	uint64_t db_off;
@@ -287,13 +481,16 @@ intel_ntb_db_clear(struct rte_rawdev *dev, uint64_t db_bits)
 	db_off = XEON_IM_INT_STATUS_OFFSET;
 	db_addr = hw->hw_addr + db_off;
 
+	if (is_gen4_ntb(hw))
+		rte_write16(XEON_GEN4_SLOTSTS_DLLSCS,
+			    hw->hw_addr + XEON_GEN4_SLOTSTS);
 	rte_write64(db_bits, db_addr);
 
 	return 0;
 }
 
 static int
-intel_ntb_db_set_mask(struct rte_rawdev *dev, uint64_t db_mask)
+intel_ntb_db_set_mask(const struct rte_rawdev *dev, uint64_t db_mask)
 {
 	struct ntb_hw *hw = dev->dev_private;
 	uint64_t db_m_off;
@@ -312,7 +509,7 @@ intel_ntb_db_set_mask(struct rte_rawdev *dev, uint64_t db_mask)
 }
 
 static int
-intel_ntb_peer_db_set(struct rte_rawdev *dev, uint8_t db_idx)
+intel_ntb_peer_db_set(const struct rte_rawdev *dev, uint8_t db_idx)
 {
 	struct ntb_hw *hw = dev->dev_private;
 	uint32_t db_off;
@@ -332,7 +529,7 @@ intel_ntb_peer_db_set(struct rte_rawdev *dev, uint8_t db_idx)
 }
 
 static int
-intel_ntb_vector_bind(struct rte_rawdev *dev, uint8_t intr, uint8_t msix)
+intel_ntb_vector_bind(const struct rte_rawdev *dev, uint8_t intr, uint8_t msix)
 {
 	struct ntb_hw *hw = dev->dev_private;
 	uint8_t reg_off;
@@ -344,7 +541,14 @@ intel_ntb_vector_bind(struct rte_rawdev *dev, uint8_t intr, uint8_t msix)
 	}
 
 	/* Bind intr source to msix vector */
-	reg_off = XEON_INTVEC_OFFSET;
+	if (is_gen3_ntb(hw))
+		reg_off = XEON_GEN3_INTVEC_OFFSET;
+	else if (is_gen4_ntb(hw))
+		reg_off = XEON_GEN4_INTVEC_OFFSET;
+	else {
+		NTB_LOG(ERR, "Cannot bind vectors for unsupported device.");
+		return -ENOTSUP;
+	}
 	reg_addr = hw->hw_addr + reg_off + intr;
 
 	rte_write8(msix, reg_addr);
@@ -357,6 +561,7 @@ const struct ntb_dev_ops intel_ntb_ops = {
 	.ntb_dev_init       = intel_ntb_dev_init,
 	.get_peer_mw_addr   = intel_ntb_get_peer_mw_addr,
 	.mw_set_trans       = intel_ntb_mw_set_trans,
+	.ioremap            = intel_ntb_ioremap,
 	.get_link_status    = intel_ntb_get_link_status,
 	.set_link           = intel_ntb_set_link,
 	.spad_read          = intel_ntb_spad_read,

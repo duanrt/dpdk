@@ -9,7 +9,7 @@
 #include <netcope/rxmac.h>
 #include <netcope/txmac.h>
 
-#include <rte_ethdev_pci.h>
+#include <ethdev_pci.h>
 #include <rte_kvargs.h>
 
 #include "nfb_stats.h"
@@ -151,18 +151,22 @@ err_rx:
  * @param dev
  *   Pointer to Ethernet device structure.
  */
-static void
+static int
 nfb_eth_dev_stop(struct rte_eth_dev *dev)
 {
 	uint16_t i;
 	uint16_t nb_rx = dev->data->nb_rx_queues;
 	uint16_t nb_tx = dev->data->nb_tx_queues;
 
+	dev->data->dev_started = 0;
+
 	for (i = 0; i < nb_tx; i++)
 		nfb_eth_tx_queue_stop(dev, i);
 
 	for (i = 0; i < nb_rx; i++)
 		nfb_eth_rx_queue_stop(dev, i);
+
+	return 0;
 }
 
 /**
@@ -188,7 +192,7 @@ nfb_eth_dev_configure(struct rte_eth_dev *dev __rte_unused)
  * @param[out] info
  *   Info structure output buffer.
  */
-static void
+static int
 nfb_eth_dev_info(struct rte_eth_dev *dev,
 	struct rte_eth_dev_info *dev_info)
 {
@@ -197,6 +201,8 @@ nfb_eth_dev_info(struct rte_eth_dev *dev,
 	dev_info->max_rx_queues = dev->data->nb_rx_queues;
 	dev_info->max_tx_queues = dev->data->nb_tx_queues;
 	dev_info->speed_capa = ETH_LINK_SPEED_100G;
+
+	return 0;
 }
 
 /**
@@ -207,14 +213,22 @@ nfb_eth_dev_info(struct rte_eth_dev *dev,
  * @param dev
  *   Pointer to Ethernet device structure.
  */
-static void
+static int
 nfb_eth_dev_close(struct rte_eth_dev *dev)
 {
+	struct pmd_internals *internals = dev->data->dev_private;
 	uint16_t i;
 	uint16_t nb_rx = dev->data->nb_rx_queues;
 	uint16_t nb_tx = dev->data->nb_tx_queues;
+	int ret;
 
-	nfb_eth_dev_stop(dev);
+	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
+		return 0;
+
+	ret = nfb_eth_dev_stop(dev);
+
+	nfb_nc_rxmac_deinit(internals->rxmac, internals->max_rxmac);
+	nfb_nc_txmac_deinit(internals->txmac, internals->max_txmac);
 
 	for (i = 0; i < nb_rx; i++) {
 		nfb_eth_rx_queue_release(dev->data->rx_queues[i]);
@@ -226,6 +240,8 @@ nfb_eth_dev_close(struct rte_eth_dev *dev)
 		dev->data->tx_queues[i] = NULL;
 	}
 	dev->data->nb_tx_queues = 0;
+
+	return ret;
 }
 
 /**
@@ -500,6 +516,8 @@ nfb_eth_dev_init(struct rte_eth_dev *dev)
 	data->all_multicast = nfb_eth_allmulticast_get(dev);
 	internals->rx_filter_original = data->promiscuous;
 
+	dev->data->dev_flags |= RTE_ETH_DEV_AUTOFILL_QUEUE_XSTATS;
+
 	RTE_LOG(INFO, PMD, "NFB device ("
 		PCI_PRI_FMT ") successfully initialized\n",
 		pci_addr->domain, pci_addr->bus, pci_addr->devid,
@@ -520,15 +538,10 @@ nfb_eth_dev_init(struct rte_eth_dev *dev)
 static int
 nfb_eth_dev_uninit(struct rte_eth_dev *dev)
 {
-	struct rte_eth_dev_data *data = dev->data;
-	struct pmd_internals *internals = (struct pmd_internals *)
-		data->dev_private;
-
 	struct rte_pci_device *pci_dev = RTE_ETH_DEV_TO_PCI(dev);
 	struct rte_pci_addr *pci_addr = &pci_dev->addr;
 
-	nfb_nc_rxmac_deinit(internals->rxmac, internals->max_rxmac);
-	nfb_nc_txmac_deinit(internals->txmac, internals->max_txmac);
+	nfb_eth_dev_close(dev);
 
 	RTE_LOG(INFO, PMD, "NFB device ("
 		PCI_PRI_FMT ") successfully uninitialized\n",

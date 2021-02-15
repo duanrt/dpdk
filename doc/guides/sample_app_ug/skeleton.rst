@@ -25,7 +25,7 @@ To run the example in a ``linux`` environment:
 
 .. code-block:: console
 
-    ./build/basicfwd -l 1 -n 4
+    ./<build_dir>/examples/dpdk-skeleton -l 1 -n 4
 
 Refer to *DPDK Getting Started Guide* for general information on running
 applications and the Environment Abstraction Layer (EAL) options.
@@ -149,7 +149,9 @@ Forwarding application is shown below:
             return retval;
 
         /* Enable RX in promiscuous mode for the Ethernet device. */
-        rte_eth_promiscuous_enable(port);
+        retval = rte_eth_promiscuous_enable(port);
+        if (retval != 0)
+            return retval;
 
         return 0;
     }
@@ -177,7 +179,7 @@ Finally the RX port is set in promiscuous mode:
 
 .. code-block:: c
 
-        rte_eth_promiscuous_enable(port);
+        retval = rte_eth_promiscuous_enable(port);
 
 
 The Lcores Main
@@ -189,7 +191,7 @@ looks like the following:
 
 .. code-block:: c
 
-    static __attribute__((noreturn)) void
+    static __rte_noreturn void
     lcore_main(void)
     {
         uint16_t port;

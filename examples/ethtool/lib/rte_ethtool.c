@@ -9,7 +9,7 @@
 #include <rte_ethdev.h>
 #include <rte_ether.h>
 #include <rte_bus_pci.h>
-#ifdef RTE_LIBRTE_IXGBE_PMD
+#ifdef RTE_NET_IXGBE
 #include <rte_pmd_ixgbe.h>
 #endif
 #include "rte_ethtool.h"
@@ -41,8 +41,13 @@ rte_ethtool_get_drvinfo(uint16_t port_id, struct ethtool_drvinfo *drvinfo)
 		printf("Insufficient fw version buffer size, "
 		       "the minimum size should be %d\n", ret);
 
-	memset(&dev_info, 0, sizeof(dev_info));
-	rte_eth_dev_info_get(port_id, &dev_info);
+	ret = rte_eth_dev_info_get(port_id, &dev_info);
+	if (ret != 0) {
+		printf("Error during getting device (port %u) info: %s\n",
+		       port_id, strerror(-ret));
+
+		return ret;
+	}
 
 	strlcpy(drvinfo->driver, dev_info.driver_name,
 		sizeof(drvinfo->driver));
@@ -119,9 +124,13 @@ int
 rte_ethtool_get_link(uint16_t port_id)
 {
 	struct rte_eth_link link;
+	int ret;
 
 	RTE_ETH_VALID_PORTID_OR_ERR_RET(port_id, -ENODEV);
-	rte_eth_link_get(port_id, &link);
+	ret = rte_eth_link_get(port_id, &link);
+	if (ret < 0)
+		return ret;
+
 	return link.link_status;
 }
 
@@ -288,7 +297,11 @@ rte_ethtool_set_pauseparam(uint16_t port_id,
 int
 rte_ethtool_net_open(uint16_t port_id)
 {
-	rte_eth_dev_stop(port_id);
+	int ret;
+
+	ret = rte_eth_dev_stop(port_id);
+	if (ret != 0)
+		return ret;
 
 	return rte_eth_dev_start(port_id);
 }
@@ -296,19 +309,21 @@ rte_ethtool_net_open(uint16_t port_id)
 int
 rte_ethtool_net_stop(uint16_t port_id)
 {
-	RTE_ETH_VALID_PORTID_OR_ERR_RET(port_id, -ENODEV);
-	rte_eth_dev_stop(port_id);
-
-	return 0;
+	return rte_eth_dev_stop(port_id);
 }
 
 int
 rte_ethtool_net_get_mac_addr(uint16_t port_id, struct rte_ether_addr *addr)
 {
+	int ret;
+
 	RTE_ETH_VALID_PORTID_OR_ERR_RET(port_id, -ENODEV);
 	if (addr == NULL)
 		return -EINVAL;
-	rte_eth_macaddr_get(port_id, addr);
+
+	ret = rte_eth_macaddr_get(port_id, addr);
+	if (ret != 0)
+		return ret;
 
 	return 0;
 }
@@ -371,21 +386,26 @@ rte_ethtool_net_set_rx_mode(uint16_t port_id)
 	uint16_t num_vfs;
 	struct rte_eth_dev_info dev_info;
 	uint16_t vf;
+	int ret;
 
-	memset(&dev_info, 0, sizeof(dev_info));
-	rte_eth_dev_info_get(port_id, &dev_info);
+	ret = rte_eth_dev_info_get(port_id, &dev_info);
+	if (ret != 0)
+		return ret;
+
 	num_vfs = dev_info.max_vfs;
 
 	/* Set VF vf_rx_mode, VF unsupport status is discard */
 	for (vf = 0; vf < num_vfs; vf++) {
-#ifdef RTE_LIBRTE_IXGBE_PMD
+#ifdef RTE_NET_IXGBE
 		rte_pmd_ixgbe_set_vf_rxmode(port_id, vf,
 			ETH_VMDQ_ACCEPT_UNTAG, 0);
 #endif
 	}
 
 	/* Enable Rx vlan filter, VF unspport status is discard */
-	rte_eth_dev_set_vlan_offload(port_id, ETH_VLAN_FILTER_MASK);
+	ret = rte_eth_dev_set_vlan_offload(port_id, ETH_VLAN_FILTER_MASK);
+	if (ret != 0)
+		return ret;
 
 	return 0;
 }
@@ -399,11 +419,14 @@ rte_ethtool_get_ringparam(uint16_t port_id,
 	struct rte_eth_rxq_info rx_qinfo;
 	struct rte_eth_txq_info tx_qinfo;
 	int stat;
+	int ret;
 
 	if (ring_param == NULL)
 		return -EINVAL;
 
-	rte_eth_dev_info_get(port_id, &dev_info);
+	ret = rte_eth_dev_info_get(port_id, &dev_info);
+	if (ret != 0)
+		return ret;
 
 	stat = rte_eth_rx_queue_info_get(port_id, 0, &rx_qinfo);
 	if (stat != 0)
@@ -437,7 +460,9 @@ rte_ethtool_set_ringparam(uint16_t port_id,
 	if (stat != 0)
 		return stat;
 
-	rte_eth_dev_stop(port_id);
+	stat = rte_eth_dev_stop(port_id);
+	if (stat != 0)
+		return stat;
 
 	stat = rte_eth_tx_queue_setup(port_id, 0, ring_param->tx_pending,
 		rte_socket_id(), NULL);

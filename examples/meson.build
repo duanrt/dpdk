@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: BSD-3-Clause
 # Copyright(c) 2017-2019 Intel Corporation
 
-driver_libs = []
+link_whole_libs = []
 if get_option('default_library') == 'static'
-	driver_libs = dpdk_drivers
+	link_whole_libs = dpdk_static_libraries + dpdk_drivers
 endif
 
 execinfo = cc.find_library('execinfo', required: false)
@@ -11,43 +11,42 @@ execinfo = cc.find_library('execinfo', required: false)
 # list of all example apps. Keep 1-3 per line, in alphabetical order.
 all_examples = [
 	'bbdev_app', 'bond',
-	'bpf', 'cmdline',
+	'cmdline',
 	'distributor', 'ethtool',
-	'eventdev_pipeline', 'exception_path',
+	'eventdev_pipeline',
 	'fips_validation', 'flow_classify',
 	'flow_filtering', 'helloworld',
+	'ioat',
 	'ip_fragmentation', 'ip_pipeline',
 	'ip_reassembly', 'ipsec-secgw',
 	'ipv4_multicast', 'kni',
-	'l2fwd', 'l2fwd-cat',
+	'l2fwd', 'l2fwd-cat', 'l2fwd-event',
 	'l2fwd-crypto', 'l2fwd-jobstats',
 	'l2fwd-keepalive', 'l3fwd',
-	'l3fwd-acl', 'l3fwd-power',
-	'l3fwd-vf', 'link_status_interrupt',
-	'load_balancer',
+	'l3fwd-acl', 'l3fwd-power', 'l3fwd-graph',
+	'link_status_interrupt',
 	'multi_process/client_server_mp/mp_client',
 	'multi_process/client_server_mp/mp_server',
 	'multi_process/hotplug_mp',
 	'multi_process/simple_mp',
 	'multi_process/symmetric_mp',
-	'netmap_compat', 'ntb', 'packet_ordering',
-	'performance-thread', 'ptpclient',
+	'ntb', 'packet_ordering',
+	'performance-thread/l3fwd-thread',
+	'performance-thread/pthread_shim',
+	'pipeline',
+	'ptpclient',
 	'qos_meter', 'qos_sched',
-	'quota_watermark', 'rxtx_callbacks',
-	'server_node_efd', 'service_cores',
-	'skeleton', 'tep_termination',
+	'rxtx_callbacks',
+	'server_node_efd/node',
+	'server_node_efd/server',
+	'service_cores',
+	'skeleton',
 	'timer', 'vdpa',
 	'vhost', 'vhost_crypto',
-	'vhost_scsi', 'vm_power_manager',
+	'vhost_blk', 'vm_power_manager',
+	'vm_power_manager/guest_cli',
 	'vmdq', 'vmdq_dcb',
 ]
-# install all example code on install - irrespective of whether the example in
-# question is to be built as part of this build or not.
-foreach ex:all_examples
-	install_subdir(ex,
-			install_dir: get_option('datadir') + '/dpdk/examples',
-			exclude_files: 'meson.build')
-endforeach
 
 if get_option('examples') == ''
 	subdir_done()
@@ -64,6 +63,10 @@ default_cflags = machine_args
 if cc.has_argument('-Wno-format-truncation')
 	default_cflags += '-Wno-format-truncation'
 endif
+default_ldflags = dpdk_extra_ldflags
+if get_option('default_library') == 'static' and not is_windows
+	default_ldflags += ['-Wl,--export-dynamic']
+endif
 
 foreach example: examples
 	name = example.split('/')[-1]
@@ -71,13 +74,11 @@ foreach example: examples
 	sources = []
 	allow_experimental_apis = false
 	cflags = default_cflags
+	ldflags = default_ldflags
 
 	ext_deps = [execinfo]
 	includes = [include_directories(example)]
 	deps = ['eal', 'mempool', 'net', 'mbuf', 'ethdev', 'cmdline']
-	if is_windows
-		deps = ['eal'] # only supported lib on Windows currently
-	endif
 	subdir(example)
 
 	if build
@@ -94,8 +95,8 @@ foreach example: examples
 		endif
 		executable('dpdk-' + name, sources,
 			include_directories: includes,
-			link_whole: driver_libs,
-			link_args: dpdk_extra_ldflags,
+			link_whole: link_whole_libs,
+			link_args: ldflags,
 			c_args: cflags,
 			dependencies: dep_objs)
 	elif not allow_skips

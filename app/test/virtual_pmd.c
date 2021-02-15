@@ -4,7 +4,7 @@
 
 #include <rte_mbuf.h>
 #include <rte_ethdev.h>
-#include <rte_ethdev_driver.h>
+#include <ethdev_driver.h>
 #include <rte_pci.h>
 #include <rte_bus_pci.h>
 #include <rte_malloc.h>
@@ -48,7 +48,7 @@ virtual_ethdev_start_fail(struct rte_eth_dev *eth_dev __rte_unused)
 
 	return -1;
 }
-static void  virtual_ethdev_stop(struct rte_eth_dev *eth_dev __rte_unused)
+static int  virtual_ethdev_stop(struct rte_eth_dev *eth_dev __rte_unused)
 {
 	void *pkt = NULL;
 	struct virtual_ethdev_private *prv = eth_dev->data->dev_private;
@@ -60,11 +60,15 @@ static void  virtual_ethdev_stop(struct rte_eth_dev *eth_dev __rte_unused)
 
 	while (rte_ring_dequeue(prv->tx_queue, &pkt) != -ENOENT)
 		rte_pktmbuf_free(pkt);
+
+	return 0;
 }
 
-static void
+static int
 virtual_ethdev_close(struct rte_eth_dev *dev __rte_unused)
-{}
+{
+	return 0;
+}
 
 static int
 virtual_ethdev_configure_success(struct rte_eth_dev *dev __rte_unused)
@@ -78,7 +82,7 @@ virtual_ethdev_configure_fail(struct rte_eth_dev *dev __rte_unused)
 	return -1;
 }
 
-static void
+static int
 virtual_ethdev_info_get(struct rte_eth_dev *dev __rte_unused,
 		struct rte_eth_dev_info *dev_info)
 {
@@ -91,6 +95,8 @@ virtual_ethdev_info_get(struct rte_eth_dev *dev __rte_unused,
 	dev_info->max_tx_queues = (uint16_t)512;
 
 	dev_info->min_rx_bufsize = 0;
+
+	return 0;
 }
 
 static int
@@ -195,7 +201,7 @@ virtual_ethdev_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *stats)
 	return 0;
 }
 
-static void
+static int
 virtual_ethdev_stats_reset(struct rte_eth_dev *dev)
 {
 	struct virtual_ethdev_private *dev_private = dev->data->dev_private;
@@ -206,15 +212,21 @@ virtual_ethdev_stats_reset(struct rte_eth_dev *dev)
 
 	/* Reset internal statistics */
 	memset(&dev_private->eth_stats, 0, sizeof(dev_private->eth_stats));
+
+	return 0;
 }
 
-static void
+static int
 virtual_ethdev_promiscuous_mode_enable(struct rte_eth_dev *dev __rte_unused)
-{}
+{
+	return 0;
+}
 
-static void
+static int
 virtual_ethdev_promiscuous_mode_disable(struct rte_eth_dev *dev __rte_unused)
-{}
+{
+	return 0;
+}
 
 static int
 virtual_ethdev_mac_address_set(__rte_unused struct rte_eth_dev *dev,
@@ -466,8 +478,8 @@ virtual_ethdev_simulate_link_status_interrupt(uint16_t port_id,
 
 	vrtl_eth_dev->data->dev_link.link_status = link_status;
 
-	_rte_eth_dev_callback_process(vrtl_eth_dev, RTE_ETH_EVENT_INTR_LSC,
-				      NULL);
+	rte_eth_dev_callback_process(vrtl_eth_dev, RTE_ETH_EVENT_INTR_LSC,
+				     NULL);
 }
 
 int

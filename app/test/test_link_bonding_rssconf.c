@@ -176,7 +176,8 @@ static int
 remove_slaves_and_stop_bonded_device(void)
 {
 	TEST_ASSERT_SUCCESS(remove_slaves(), "Removing slaves");
-	rte_eth_dev_stop(test_params.bond_port_id);
+	TEST_ASSERT_SUCCESS(rte_eth_dev_stop(test_params.bond_port_id),
+			"Failed to stop port %u", test_params.bond_port_id);
 	return TEST_SUCCESS;
 }
 
@@ -329,7 +330,11 @@ test_propagate(void)
 	uint64_t rss_hf = 0;
 	uint64_t default_rss_hf = 0;
 
-	rte_eth_dev_info_get(test_params.bond_port_id, &test_params.bond_dev_info);
+	retval = rte_eth_dev_info_get(test_params.bond_port_id,
+						&test_params.bond_dev_info);
+	TEST_ASSERT((retval == 0),
+			"Error during getting device (port %u) info: %s\n",
+			test_params.bond_port_id, strerror(-retval));
 
 	/*
 	 *  Test hash function propagation
@@ -443,10 +448,16 @@ test_rss(void)
 	/**
 	 * Configure bonding port in RSS mq mode
 	 */
+	int ret;
+
 	TEST_ASSERT_SUCCESS(configure_ethdev(test_params.bond_port_id,
 			&rss_pmd_conf, 0), "Failed to configure bonding device\n");
 
-	rte_eth_dev_info_get(test_params.bond_port_id, &test_params.bond_dev_info);
+	ret = rte_eth_dev_info_get(test_params.bond_port_id,
+					&test_params.bond_dev_info);
+	TEST_ASSERT((ret == 0),
+			"Error during getting device (port %u) info: %s\n",
+			test_params.bond_port_id, strerror(-ret));
 
 	TEST_ASSERT_SUCCESS(bond_slaves(), "Bonding slaves failed");
 
@@ -468,10 +479,16 @@ test_rss(void)
 static int
 test_rss_lazy(void)
 {
+	int ret;
+
 	TEST_ASSERT_SUCCESS(configure_ethdev(test_params.bond_port_id,
 			&default_pmd_conf, 0), "Failed to configure bonding device\n");
 
-	rte_eth_dev_info_get(test_params.bond_port_id, &test_params.bond_dev_info);
+	ret = rte_eth_dev_info_get(test_params.bond_port_id,
+						&test_params.bond_dev_info);
+	TEST_ASSERT((ret == 0),
+			"Error during getting device (port %u) info: %s\n",
+			test_params.bond_port_id, strerror(-ret));
 
 	TEST_ASSERT_SUCCESS(bond_slaves(), "Bonding slaves failed");
 
@@ -532,6 +549,10 @@ test_setup(void)
 		rte_eth_dev_default_mac_addr_set(port->port_id, &mac_addr);
 
 		rte_eth_dev_info_get(port->port_id, &port->dev_info);
+		retval = rte_eth_dev_info_get(port->port_id, &port->dev_info);
+		TEST_ASSERT((retval == 0),
+				"Error during getting device (port %u) info: %s\n",
+				test_params.bond_port_id, strerror(-retval));
 	}
 
 	if (test_params.bond_port_id == INVALID_PORT_ID) {
@@ -545,8 +566,11 @@ test_setup(void)
 		TEST_ASSERT_SUCCESS(configure_ethdev(test_params.bond_port_id,
 				&default_pmd_conf, 0), "Failed to configure bonding device\n");
 
-		rte_eth_dev_info_get(test_params.bond_port_id,
-				&test_params.bond_dev_info);
+		retval = rte_eth_dev_info_get(test_params.bond_port_id,
+						&test_params.bond_dev_info);
+		TEST_ASSERT((retval == 0),
+				"Error during getting device (port %u) info: %s\n",
+				test_params.bond_port_id, strerror(-retval));
 	}
 
 	return TEST_SUCCESS;

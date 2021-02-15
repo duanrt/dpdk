@@ -31,6 +31,7 @@
 	(0x80008ull | (uint64_t)(a) << 6)
 #define NPC_AF_PKINDX_CPI_DEFX(a, b)                 \
 	(0x80020ull | (uint64_t)(a) << 6 | (uint64_t)(b) << 3)
+#define NPC_AF_CHLEN90B_PKIND                        (0x3bull)
 #define NPC_AF_KPUX_ENTRYX_CAMX(a, b, c)             \
 	(0x100000ull | (uint64_t)(a) << 14 | (uint64_t)(b) << 6 | \
 	(uint64_t)(c) << 3)
@@ -132,6 +133,7 @@ enum npc_kpu_err_code {
 	NPC_EC_NOERR = 0, /* has to be zero */
 	NPC_EC_UNK,
 	NPC_EC_IH_LENGTH,
+	NPC_EC_EDSA_UNK,
 	NPC_EC_L2_K1,
 	NPC_EC_L2_K2,
 	NPC_EC_L2_K3,
@@ -181,19 +183,35 @@ enum npc_kpu_la_ltype {
 	NPC_LT_LA_IH_8_ETHER,
 	NPC_LT_LA_IH_4_ETHER,
 	NPC_LT_LA_IH_2_ETHER,
+	NPC_LT_LA_HIGIG2_ETHER,
+	NPC_LT_LA_IH_NIX_HIGIG2_ETHER,
+	NPC_LT_LA_CUSTOM_L2_90B_ETHER,
+	NPC_LT_LA_CPT_HDR,
+	NPC_LT_LA_CUSTOM_L2_24B_ETHER,
+	NPC_LT_LA_CUSTOM0 = 0xE,
+	NPC_LT_LA_CUSTOM1 = 0xF,
 };
 
 enum npc_kpu_lb_ltype {
 	NPC_LT_LB_ETAG = 1,
 	NPC_LT_LB_CTAG,
-	NPC_LT_LB_STAG,
+	NPC_LT_LB_STAG_QINQ,
 	NPC_LT_LB_BTAG,
-	NPC_LT_LB_QINQ,
 	NPC_LT_LB_ITAG,
+	NPC_LT_LB_DSA,
+	NPC_LT_LB_DSA_VLAN,
+	NPC_LT_LB_EDSA,
+	NPC_LT_LB_EDSA_VLAN,
+	NPC_LT_LB_EXDSA,
+	NPC_LT_LB_EXDSA_VLAN,
+	NPC_LT_LB_FDSA,
+	NPC_LT_LB_CUSTOM0 = 0xE,
+	NPC_LT_LB_CUSTOM1 = 0xF,
 };
 
 enum npc_kpu_lc_ltype {
-	NPC_LT_LC_IP = 1,
+	NPC_LT_LC_PTP = 1,
+	NPC_LT_LC_IP,
 	NPC_LT_LC_IP_OPT,
 	NPC_LT_LC_IP6,
 	NPC_LT_LC_IP6_EXT,
@@ -201,11 +219,12 @@ enum npc_kpu_lc_ltype {
 	NPC_LT_LC_RARP,
 	NPC_LT_LC_MPLS,
 	NPC_LT_LC_NSH,
-	NPC_LT_LC_PTP,
 	NPC_LT_LC_FCOE,
+	NPC_LT_LC_CUSTOM0 = 0xE,
+	NPC_LT_LC_CUSTOM1 = 0xF,
 };
 
-/* Don't modify Ltypes upto SCTP, otherwise it will
+/* Don't modify Ltypes up to SCTP, otherwise it will
  * effect flow tag calculation and thus RSS.
  */
 enum npc_kpu_ld_ltype {
@@ -214,8 +233,9 @@ enum npc_kpu_ld_ltype {
 	NPC_LT_LD_ICMP,
 	NPC_LT_LD_SCTP,
 	NPC_LT_LD_ICMP6,
+	NPC_LT_LD_CUSTOM0,
+	NPC_LT_LD_CUSTOM1,
 	NPC_LT_LD_IGMP = 8,
-	NPC_LT_LD_ESP,
 	NPC_LT_LD_AH,
 	NPC_LT_LD_GRE,
 	NPC_LT_LD_NVGRE,
@@ -227,6 +247,7 @@ enum npc_kpu_ld_ltype {
 enum npc_kpu_le_ltype {
 	NPC_LT_LE_VXLAN = 1,
 	NPC_LT_LE_GENEVE,
+	NPC_LT_LE_ESP,
 	NPC_LT_LE_GTPU = 4,
 	NPC_LT_LE_VXLANGPE,
 	NPC_LT_LE_GTPC,
@@ -234,6 +255,8 @@ enum npc_kpu_le_ltype {
 	NPC_LT_LE_TU_MPLS_IN_GRE,
 	NPC_LT_LE_TU_NSH_IN_GRE,
 	NPC_LT_LE_TU_MPLS_IN_UDP,
+	NPC_LT_LE_CUSTOM0 = 0xE,
+	NPC_LT_LE_CUSTOM1 = 0xF,
 };
 
 enum npc_kpu_lf_ltype {
@@ -243,18 +266,22 @@ enum npc_kpu_lf_ltype {
 	NPC_LT_LF_TU_NSH_IN_VXLANGPE,
 	NPC_LT_LF_TU_MPLS_IN_NSH,
 	NPC_LT_LF_TU_3RD_NSH,
+	NPC_LT_LF_CUSTOM0 = 0xE,
+	NPC_LT_LF_CUSTOM1 = 0xF,
 };
 
-/* Don't modify Ltypes upto SCTP, otherwise it will
- * effect flow tag calculation and thus RSS.
- */
 enum npc_kpu_lg_ltype {
 	NPC_LT_LG_TU_IP = 1,
 	NPC_LT_LG_TU_IP6,
 	NPC_LT_LG_TU_ARP,
 	NPC_LT_LG_TU_ETHER_IN_NSH,
+	NPC_LT_LG_CUSTOM0 = 0xE,
+	NPC_LT_LG_CUSTOM1 = 0xF,
 };
 
+/* Don't modify Ltypes up to SCTP, otherwise it will
+ * effect flow tag calculation and thus RSS.
+ */
 enum npc_kpu_lh_ltype {
 	NPC_LT_LH_TU_TCP = 1,
 	NPC_LT_LH_TU_UDP,
@@ -264,6 +291,8 @@ enum npc_kpu_lh_ltype {
 	NPC_LT_LH_TU_IGMP = 8,
 	NPC_LT_LH_TU_ESP,
 	NPC_LT_LH_TU_AH,
+	NPC_LT_LH_CUSTOM0 = 0xE,
+	NPC_LT_LH_CUSTOM1 = 0xF,
 };
 
 /* Structures definitions */

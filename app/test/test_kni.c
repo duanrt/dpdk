@@ -11,7 +11,7 @@
 
 #include "test.h"
 
-#if !defined(RTE_EXEC_ENV_LINUX) || !defined(RTE_LIBRTE_KNI)
+#if !defined(RTE_EXEC_ENV_LINUX) || !defined(RTE_LIB_KNI)
 
 static int
 test_kni(void)
@@ -85,7 +85,7 @@ static struct rte_kni_ops kni_ops = {
 	.config_promiscusity = NULL,
 };
 
-static unsigned lcore_master, lcore_ingress, lcore_egress;
+static unsigned int lcore_main, lcore_ingress, lcore_egress;
 static struct rte_kni *test_kni_ctx;
 static struct test_kni_stats stats;
 
@@ -202,7 +202,7 @@ error:
  * supported by KNI kernel module. The ingress lcore will allocate mbufs and
  * transmit them to kernel space; while the egress lcore will receive the mbufs
  * from kernel space and free them.
- * On the master lcore, several commands will be run to check handling the
+ * On the main lcore, several commands will be run to check handling the
  * kernel requests. And it will finally set the flag to exit the KNI
  * transmitting/receiving to/from the kernel space.
  *
@@ -217,7 +217,7 @@ test_kni_loop(__rte_unused void *arg)
 	const unsigned lcore_id = rte_lcore_id();
 	struct rte_mbuf *pkts_burst[PKT_BURST_SZ];
 
-	if (lcore_id == lcore_master) {
+	if (lcore_id == lcore_main) {
 		rte_delay_ms(KNI_TIMEOUT_MS);
 		/* tests of handling kernel request */
 		if (system(IFCONFIG TEST_KNI_PORT" up") == -1)
@@ -276,12 +276,12 @@ test_kni_allocate_lcores(void)
 {
 	unsigned i, count = 0;
 
-	lcore_master = rte_get_master_lcore();
-	printf("master lcore: %u\n", lcore_master);
+	lcore_main = rte_get_main_lcore();
+	printf("main lcore: %u\n", lcore_main);
 	for (i = 0; i < RTE_MAX_LCORE; i++) {
 		if (count >=2 )
 			break;
-		if (rte_lcore_is_enabled(i) && i != lcore_master) {
+		if (rte_lcore_is_enabled(i) && i != lcore_main) {
 			count ++;
 			if (count == 1)
 				lcore_ingress = i;
@@ -436,7 +436,13 @@ test_kni_processing(uint16_t port_id, struct rte_mempool *mp)
 	memset(&info, 0, sizeof(info));
 	memset(&ops, 0, sizeof(ops));
 
-	rte_eth_dev_info_get(port_id, &info);
+	ret = rte_eth_dev_info_get(port_id, &info);
+	if (ret != 0) {
+		printf("Error during getting device (port %u) info: %s\n",
+				port_id, strerror(-ret));
+		return -1;
+	}
+
 	if (info.device)
 		bus = rte_bus_find_by_device(info.device);
 	if (bus && !strcmp(bus->name, "pci")) {
@@ -481,8 +487,8 @@ test_kni_processing(uint16_t port_id, struct rte_mempool *mp)
 	if (ret != 0)
 		goto fail_kni;
 
-	rte_eal_mp_remote_launch(test_kni_loop, NULL, CALL_MASTER);
-	RTE_LCORE_FOREACH_SLAVE(i) {
+	rte_eal_mp_remote_launch(test_kni_loop, NULL, CALL_MAIN);
+	RTE_LCORE_FOREACH_WORKER(i) {
 		if (rte_eal_wait_lcore(i) < 0) {
 			ret = -1;
 			goto fail_kni;
@@ -595,7 +601,12 @@ test_kni(void)
 		printf("fail to start port %d\n", port_id);
 		return -1;
 	}
-	rte_eth_promiscuous_enable(port_id);
+	ret = rte_eth_promiscuous_enable(port_id);
+	if (ret != 0) {
+		printf("fail to enable promiscuous mode for port %d: %s\n",
+			port_id, rte_strerror(-ret));
+		return -1;
+	}
 
 	/* basic test of kni processing */
 	fd = fopen(KNI_MODULE_PARAM_LO, "r");
@@ -622,7 +633,14 @@ test_kni(void)
 	memset(&info, 0, sizeof(info));
 	memset(&conf, 0, sizeof(conf));
 	memset(&ops, 0, sizeof(ops));
-	rte_eth_dev_info_get(port_id, &info);
+
+	ret = rte_eth_dev_info_get(port_id, &info);
+	if (ret != 0) {
+		printf("Error during getting device (port %u) info: %s\n",
+				port_id, strerror(-ret));
+		return -1;
+	}
+
 	if (info.device)
 		bus = rte_bus_find_by_device(info.device);
 	else
@@ -658,7 +676,15 @@ test_kni(void)
 	memset(&conf, 0, sizeof(conf));
 	memset(&info, 0, sizeof(info));
 	memset(&ops, 0, sizeof(ops));
-	rte_eth_dev_info_get(port_id, &info);
+
+	ret = rte_eth_dev_info_get(port_id, &info);
+	if (ret != 0) {
+		printf("Error during getting device (port %u) info: %s\n",
+				port_id, strerror(-ret));
+		ret = -1;
+		goto fail;
+	}
+
 	if (info.device)
 		bus = rte_bus_find_by_device(info.device);
 	else
@@ -729,7 +755,8 @@ test_kni(void)
 	ret = 0;
 
 fail:
-	rte_eth_dev_stop(port_id);
+	if (rte_eth_dev_stop(port_id) != 0)
+		printf("Failed to stop port %u\n", port_id);
 
 	return ret;
 }

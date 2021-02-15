@@ -28,8 +28,8 @@ To run the example in a ``linux`` environment:
 
 .. code-block:: console
 
-    cd ~/dpdk/examples/flow_classify
-    ./build/flow_classify -c 4 -n 4 -- --rule_ipv4="../ipv4_rules_file.txt"
+    ./<build_dir>/examples/dpdk-flow_classify -c 4 -n 4 -- /
+    --rule_ipv4="../ipv4_rules_file.txt"
 
 Please refer to the *DPDK Getting Started Guide*, section
 :doc:`../linux_gsg/build_sample_apps`
@@ -271,7 +271,7 @@ Forwarding application is shown below:
 .. code-block:: c
 
     static inline int
-    port_init(uint8_t port, struct rte_mempool *mbuf_pool)
+    port_init(uint16_t port, struct rte_mempool *mbuf_pool)
     {
         struct rte_eth_conf port_conf = port_conf_default;
         const uint16_t rx_rings = 1, tx_rings = 1;
@@ -306,7 +306,9 @@ Forwarding application is shown below:
             return retval;
 
         /* Display the port MAC address. */
-        rte_eth_macaddr_get(port, &addr);
+        retval = rte_eth_macaddr_get(port, &addr);
+        if (retval < 0)
+            return retval;
         printf("Port %u MAC: %02" PRIx8 " %02" PRIx8 " %02" PRIx8
                " %02" PRIx8 " %02" PRIx8 " %02" PRIx8 "\n",
                port,
@@ -315,7 +317,9 @@ Forwarding application is shown below:
                addr.addr_bytes[4], addr.addr_bytes[5]);
 
         /* Enable RX in promiscuous mode for the Ethernet device. */
-        rte_eth_promiscuous_enable(port);
+        retval = rte_eth_promiscuous_enable(port);
+        if (retval != 0)
+                return retval;
 
         return 0;
     }
@@ -343,7 +347,7 @@ Finally the RX port is set in promiscuous mode:
 
 .. code-block:: c
 
-    rte_eth_promiscuous_enable(port);
+    retval = rte_eth_promiscuous_enable(port);
 
 The Add Rules function
 ~~~~~~~~~~~~~~~~~~~~~~
@@ -418,7 +422,7 @@ following:
             .stats = (void *)&ntuple_stats
     };
 
-    static __attribute__((noreturn)) void
+    static __rte_noreturn void
     lcore_main(cls_app)
     {
         uint16_t port;

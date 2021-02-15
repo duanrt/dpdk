@@ -13,9 +13,9 @@ More information about OCTEON TX2 SoC can be found at `Marvell Official Website
 Supported OCTEON TX2 SoCs
 -------------------------
 
+- CN98xx
 - CN96xx
 - CN93xx
-- CNF95xx
 
 OCTEON TX2 Resource Virtualization Unit architecture
 ----------------------------------------------------
@@ -65,6 +65,10 @@ DPDK subsystem.
    +---+-----+--------------------------------------------------------------+
    | 8 | DPI | rte_rawdev                                                   |
    +---+-----+--------------------------------------------------------------+
+   | 9 | SDP | rte_ethdev                                                   |
+   +---+-----+--------------------------------------------------------------+
+   | 10| REE | rte_regexdev                                                 |
+   +---+-----+--------------------------------------------------------------+
 
 PF0 is called the administrative / admin function (AF) and has exclusive
 privileges to provision RVU functional block's LFs to each of the PF/VF.
@@ -103,6 +107,25 @@ Typical application usage models are,
 #. Exception path to Linux kernel from DPDK application as SW ``KNI`` replacement.
 #. Communication between two different DPDK applications.
 
+SDP interface
+-------------
+
+System DPI Packet Interface unit(SDP) provides PCIe endpoint support for remote host
+to DMA packets into and out of OCTEON TX2 SoC. SDP interface comes in to live only when
+OCTEON TX2 SoC is connected in PCIe endpoint mode. It can be used to send/receive
+packets to/from remote host machine using input/output queue pairs exposed to it.
+SDP interface receives input packets from remote host from NIX-RX and sends packets
+to remote host using NIX-TX. Remote host machine need to use corresponding driver
+(kernel/user mode) to communicate with SDP interface on OCTEON TX2 SoC. SDP supports
+single PCIe SRIOV physical function(PF) and multiple virtual functions(VF's). Users
+can bind PF or VF to use SDP interface and it will be enumerated as ethdev ports.
+
+The primary use case for SDP is to enable the smart NIC use case. Typical usage models are,
+
+#. Communication channel between remote host and OCTEON TX2 SoC over PCIe.
+#. Transfer packets received from network interface to remote host over PCIe and
+   vice-versa.
+
 OCTEON TX2 packet flow
 ----------------------
 
@@ -131,6 +154,12 @@ This section lists dataplane H/W block(s) available in OCTEON TX2 SoC.
 
 #. **DMA Rawdev Driver**
    See :doc:`../rawdevs/octeontx2_dma` for DMA driver information.
+
+#. **Crypto Device Driver**
+   See :doc:`../cryptodevs/octeontx2` for CPT crypto device driver information.
+
+#. **Regex Device Driver**
+   See :doc:`../regexdevs/octeontx2` for REE regex device driver information.
 
 Procedure to Setup Platform
 ---------------------------
@@ -474,27 +503,6 @@ an x86 based platform.
 Native Compilation
 ~~~~~~~~~~~~~~~~~~
 
-make build
-^^^^^^^^^^
-
-.. code-block:: console
-
-        make config T=arm64-octeontx2-linux-gcc
-        make -j
-
-The example applications can be compiled using the following:
-
-.. code-block:: console
-
-        cd <dpdk directory>
-        export RTE_SDK=$PWD
-        export RTE_TARGET=build
-        cd examples/<application>
-        make -j
-
-meson build
-^^^^^^^^^^^
-
 .. code-block:: console
 
         meson build
@@ -504,17 +512,6 @@ Cross Compilation
 ~~~~~~~~~~~~~~~~~
 
 Refer to :doc:`../linux_gsg/cross_build_dpdk_for_arm64` for generic arm64 details.
-
-make build
-^^^^^^^^^^
-
-.. code-block:: console
-
-        make config T=arm64-octeontx2-linux-gcc
-        make -j CROSS=aarch64-marvell-linux-gnu- CONFIG_RTE_KNI_KMOD=n
-
-meson build
-^^^^^^^^^^^
 
 .. code-block:: console
 

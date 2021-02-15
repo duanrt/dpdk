@@ -237,7 +237,7 @@ fill_crypto_xform(struct ipsec_unitest_params *ut_params,
 }
 
 static int
-check_cryptodev_capablity(const struct ipsec_unitest_params *ut,
+check_cryptodev_capability(const struct ipsec_unitest_params *ut,
 		uint8_t dev_id)
 {
 	struct rte_cryptodev_sym_capability_idx cap_idx;
@@ -302,7 +302,7 @@ testsuite_setup(void)
 
 	/* Find first valid crypto device */
 	for (i = 0; i < nb_devs; i++) {
-		rc = check_cryptodev_capablity(ut_params, i);
+		rc = check_cryptodev_capability(ut_params, i);
 		if (rc == 0) {
 			ts_params->valid_dev = i;
 			ts_params->valid_dev_found = 1;
@@ -574,7 +574,7 @@ setup_test_string_tunneled(struct rte_mempool *mpool, const char *string,
 	struct rte_mbuf *m = rte_pktmbuf_alloc(mpool);
 	uint32_t hdrlen = sizeof(struct rte_ipv4_hdr) +
 		sizeof(struct rte_esp_hdr);
-	uint32_t taillen = sizeof(struct esp_tail);
+	uint32_t taillen = sizeof(struct rte_esp_tail);
 	uint32_t t_len = len + hdrlen + taillen;
 	uint32_t padlen;
 
@@ -586,7 +586,7 @@ setup_test_string_tunneled(struct rte_mempool *mpool, const char *string,
 	padlen = RTE_ALIGN(t_len, 4) - t_len;
 	t_len += padlen;
 
-	struct esp_tail espt  = {
+	struct rte_esp_tail espt = {
 		.pad_len = padlen,
 		.next_proto = IPPROTO_IPIP,
 	};
@@ -632,7 +632,8 @@ create_dummy_sec_session(struct ipsec_unitest_params *ut,
 	static struct rte_security_session_conf conf;
 
 	ut->ss[j].security.ses = rte_security_session_create(&dummy_sec_ctx,
-					&conf, qp->mp_session_private);
+					&conf, qp->mp_session,
+					qp->mp_session_private);
 
 	if (ut->ss[j].security.ses == NULL)
 		return -ENOMEM;
@@ -689,11 +690,11 @@ fill_ipsec_param(uint32_t replay_win_sz, uint64_t flags)
 
 	prm->userdata = 1;
 	prm->flags = flags;
-	prm->replay_win_sz = replay_win_sz;
 
 	/* setup ipsec xform */
 	prm->ipsec_xform = ut_params->ipsec_xform;
 	prm->ipsec_xform.salt = (uint32_t)rte_rand();
+	prm->ipsec_xform.replay_win_sz = replay_win_sz;
 
 	/* setup tunnel related fields */
 	prm->tun.hdr_len = sizeof(ipv4_outer);
@@ -743,7 +744,7 @@ create_sa(enum rte_security_session_action_type action_type,
 	ut->ss[j].type = action_type;
 	rc = create_session(ut, &ts->qp_conf, ts->valid_dev, j);
 	if (rc != 0)
-		return TEST_FAILED;
+		return rc;
 
 	rc = rte_ipsec_sa_init(ut->ss[j].sa, &ut->sa_prm, sz);
 	rc = (rc > 0 && (uint32_t)rc <= sz) ? 0 : -EINVAL;
@@ -1168,6 +1169,34 @@ test_ipsec_dump_buffers(struct ipsec_unitest_params *ut_params, int i)
 }
 
 static void
+destroy_dummy_sec_session(struct ipsec_unitest_params *ut,
+	uint32_t j)
+{
+	rte_security_session_destroy(&dummy_sec_ctx,
+					ut->ss[j].security.ses);
+	ut->ss[j].security.ctx = NULL;
+}
+
+static void
+destroy_crypto_session(struct ipsec_unitest_params *ut,
+	uint8_t crypto_dev, uint32_t j)
+{
+	rte_cryptodev_sym_session_clear(crypto_dev, ut->ss[j].crypto.ses);
+	rte_cryptodev_sym_session_free(ut->ss[j].crypto.ses);
+	memset(&ut->ss[j], 0, sizeof(ut->ss[j]));
+}
+
+static void
+destroy_session(struct ipsec_unitest_params *ut,
+	uint8_t crypto_dev, uint32_t j)
+{
+	if (ut->ss[j].type == RTE_SECURITY_ACTION_TYPE_NONE)
+		return destroy_crypto_session(ut, crypto_dev, j);
+	else
+		return destroy_dummy_sec_session(ut, j);
+}
+
+static void
 destroy_sa(uint32_t j)
 {
 	struct ipsec_unitest_params *ut = &unittest_params;
@@ -1175,9 +1204,8 @@ destroy_sa(uint32_t j)
 
 	rte_ipsec_sa_fini(ut->ss[j].sa);
 	rte_free(ut->ss[j].sa);
-	rte_cryptodev_sym_session_clear(ts->valid_dev, ut->ss[j].crypto.ses);
-	rte_cryptodev_sym_session_free(ut->ss[j].crypto.ses);
-	memset(&ut->ss[j], 0, sizeof(ut->ss[j]));
+
+	destroy_session(ut, ts->valid_dev, j);
 }
 
 static int
@@ -1219,7 +1247,7 @@ test_ipsec_crypto_inb_burst_null_null(int i)
 			test_cfg[i].replay_win_sz, test_cfg[i].flags, 0);
 	if (rc != 0) {
 		RTE_LOG(ERR, USER1, "create_sa failed, cfg %d\n", i);
-		return TEST_FAILED;
+		return rc;
 	}
 
 	/* Generate test mbuf data */
@@ -1321,7 +1349,7 @@ test_ipsec_crypto_outb_burst_null_null(int i)
 			test_cfg[i].replay_win_sz, test_cfg[i].flags, 0);
 	if (rc != 0) {
 		RTE_LOG(ERR, USER1, "create_sa failed, cfg %d\n", i);
-		return TEST_FAILED;
+		return rc;
 	}
 
 	/* Generate input mbuf data */
@@ -1430,7 +1458,7 @@ test_ipsec_inline_crypto_inb_burst_null_null(int i)
 			test_cfg[i].replay_win_sz, test_cfg[i].flags, 0);
 	if (rc != 0) {
 		RTE_LOG(ERR, USER1, "create_sa failed, cfg %d\n", i);
-		return TEST_FAILED;
+		return rc;
 	}
 
 	/* Generate inbound mbuf data */
@@ -1508,7 +1536,7 @@ test_ipsec_inline_proto_inb_burst_null_null(int i)
 			test_cfg[i].replay_win_sz, test_cfg[i].flags, 0);
 	if (rc != 0) {
 		RTE_LOG(ERR, USER1, "create_sa failed, cfg %d\n", i);
-		return TEST_FAILED;
+		return rc;
 	}
 
 	/* Generate inbound mbuf data */
@@ -1616,7 +1644,7 @@ test_ipsec_inline_crypto_outb_burst_null_null(int i)
 			test_cfg[i].replay_win_sz, test_cfg[i].flags, 0);
 	if (rc != 0) {
 		RTE_LOG(ERR, USER1, "create_sa failed, cfg %d\n", i);
-		return TEST_FAILED;
+		return rc;
 	}
 
 	/* Generate test mbuf data */
@@ -1694,7 +1722,7 @@ test_ipsec_inline_proto_outb_burst_null_null(int i)
 			test_cfg[i].replay_win_sz, test_cfg[i].flags, 0);
 	if (rc != 0) {
 		RTE_LOG(ERR, USER1, "create_sa failed, cfg %d\n", i);
-		return TEST_FAILED;
+		return rc;
 	}
 
 	/* Generate test mbuf data */
@@ -1770,7 +1798,7 @@ test_ipsec_lksd_proto_inb_burst_null_null(int i)
 			test_cfg[i].replay_win_sz, test_cfg[i].flags, 0);
 	if (rc != 0) {
 		RTE_LOG(ERR, USER1, "create_sa failed, cfg %d\n", i);
-		return TEST_FAILED;
+		return rc;
 	}
 
 	/* Generate test mbuf data */
@@ -1883,7 +1911,7 @@ test_ipsec_replay_inb_inside_null_null(int i)
 			test_cfg[i].replay_win_sz, test_cfg[i].flags, 0);
 	if (rc != 0) {
 		RTE_LOG(ERR, USER1, "create_sa failed, cfg %d\n", i);
-		return TEST_FAILED;
+		return rc;
 	}
 
 	/* Generate inbound mbuf data */
@@ -1976,7 +2004,7 @@ test_ipsec_replay_inb_outside_null_null(int i)
 			test_cfg[i].replay_win_sz, test_cfg[i].flags, 0);
 	if (rc != 0) {
 		RTE_LOG(ERR, USER1, "create_sa failed, cfg %d\n", i);
-		return TEST_FAILED;
+		return rc;
 	}
 
 	/* Generate test mbuf data */
@@ -2076,7 +2104,7 @@ test_ipsec_replay_inb_repeat_null_null(int i)
 			test_cfg[i].replay_win_sz, test_cfg[i].flags, 0);
 	if (rc != 0) {
 		RTE_LOG(ERR, USER1, "create_sa failed, cfg %d\n", i);
-		return TEST_FAILED;
+		return rc;
 	}
 
 	/* Generate test mbuf data */
@@ -2177,7 +2205,7 @@ test_ipsec_replay_inb_inside_burst_null_null(int i)
 			test_cfg[i].replay_win_sz, test_cfg[i].flags, 0);
 	if (rc != 0) {
 		RTE_LOG(ERR, USER1, "create_sa failed, cfg %d\n", i);
-		return TEST_FAILED;
+		return rc;
 	}
 
 	/* Generate inbound mbuf data */
@@ -2310,7 +2338,7 @@ test_ipsec_crypto_inb_burst_2sa_null_null(int i)
 			test_cfg[i].replay_win_sz, test_cfg[i].flags, 0);
 	if (rc != 0) {
 		RTE_LOG(ERR, USER1, "create_sa 0 failed, cfg %d\n", i);
-		return TEST_FAILED;
+		return rc;
 	}
 
 	/* create second rte_ipsec_sa */
@@ -2320,7 +2348,7 @@ test_ipsec_crypto_inb_burst_2sa_null_null(int i)
 	if (rc != 0) {
 		RTE_LOG(ERR, USER1, "create_sa 1 failed, cfg %d\n", i);
 		destroy_sa(0);
-		return TEST_FAILED;
+		return rc;
 	}
 
 	/* Generate test mbuf data */
@@ -2396,7 +2424,7 @@ test_ipsec_crypto_inb_burst_2sa_4grp_null_null(int i)
 			test_cfg[i].replay_win_sz, test_cfg[i].flags, 0);
 	if (rc != 0) {
 		RTE_LOG(ERR, USER1, "create_sa 0 failed, cfg %d\n", i);
-		return TEST_FAILED;
+		return rc;
 	}
 
 	/* create second rte_ipsec_sa */
@@ -2406,7 +2434,7 @@ test_ipsec_crypto_inb_burst_2sa_4grp_null_null(int i)
 	if (rc != 0) {
 		RTE_LOG(ERR, USER1, "create_sa 1 failed, cfg %d\n", i);
 		destroy_sa(0);
-		return TEST_FAILED;
+		return rc;
 	}
 
 	/* Generate test mbuf data */

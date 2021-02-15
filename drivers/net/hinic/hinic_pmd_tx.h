@@ -93,6 +93,8 @@ struct hinic_txq_stats {
 	u64 off_errs;
 	u64 cpy_pkts;
 	u64 burst_pkts;
+	u64 sge_len0;
+	u64 mbuf_null;
 };
 
 struct hinic_tx_info {
@@ -114,6 +116,7 @@ struct hinic_txq {
 	u16 q_id;
 	u16 q_depth;
 	u32 cos;
+	u32 socket_id;
 
 	/* cacheline1 */
 	struct hinic_txq_stats txq_stats;
@@ -131,13 +134,14 @@ void hinic_free_tx_resources(struct hinic_txq *txq);
 
 u16 hinic_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts, u16 nb_pkts);
 
-void hinic_free_all_tx_skbs(struct hinic_txq *txq);
+void hinic_free_all_tx_mbufs(struct hinic_txq *txq);
 
 void hinic_txq_get_stats(struct hinic_txq *txq, struct hinic_txq_stats *stats);
 
 void hinic_txq_stats_reset(struct hinic_txq *txq);
 
-int hinic_create_sq(struct hinic_hwdev *hwdev, u16 q_id, u16 sq_depth);
+int hinic_create_sq(struct hinic_hwdev *hwdev, u16 q_id,
+			u16 sq_depth, unsigned int socket_id);
 
 void hinic_destroy_sq(struct hinic_hwdev *hwdev, u16 q_id);
 

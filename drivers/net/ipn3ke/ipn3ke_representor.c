@@ -12,7 +12,7 @@
 
 #include <rte_mbuf.h>
 #include <rte_sched.h>
-#include <rte_ethdev_driver.h>
+#include <ethdev_driver.h>
 #include <rte_spinlock.h>
 
 #include <rte_io.h>
@@ -40,7 +40,7 @@ static rte_spinlock_t ipn3ke_link_notify_list_lk = RTE_SPINLOCK_INITIALIZER;
 static int
 ipn3ke_rpst_link_check(struct ipn3ke_rpst *rpst);
 
-static void
+static int
 ipn3ke_rpst_dev_infos_get(struct rte_eth_dev *ethdev,
 	struct rte_eth_dev_info *dev_info)
 {
@@ -101,6 +101,8 @@ ipn3ke_rpst_dev_infos_get(struct rte_eth_dev *ethdev,
 	dev_info->switch_info.name = ethdev->device->name;
 	dev_info->switch_info.domain_id = rpst->switch_domain_id;
 	dev_info->switch_info.port_id = rpst->port_id;
+
+	return 0;
 }
 
 static int
@@ -191,7 +193,7 @@ ipn3ke_rpst_dev_start(struct rte_eth_dev *dev)
 	return 0;
 }
 
-static void
+static int
 ipn3ke_rpst_dev_stop(struct rte_eth_dev *dev)
 {
 	struct ipn3ke_hw *hw = IPN3KE_DEV_PRIVATE_TO_HW(dev);
@@ -204,13 +206,18 @@ ipn3ke_rpst_dev_stop(struct rte_eth_dev *dev)
 		/* Disable the RX path */
 		ipn3ke_xmac_rx_disable(hw, rpst->port_id, 0);
 	}
+
+	return 0;
 }
 
-static void
+static int
 ipn3ke_rpst_dev_close(struct rte_eth_dev *dev)
 {
 	struct ipn3ke_hw *hw = IPN3KE_DEV_PRIVATE_TO_HW(dev);
 	struct ipn3ke_rpst *rpst = IPN3KE_DEV_PRIVATE_TO_RPST(dev);
+
+	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
+		return 0;
 
 	if (hw->retimer.mac_type == IFPGA_RAWDEV_RETIMER_MAC_TYPE_10GE_XFI) {
 		/* Disable the TX path */
@@ -219,6 +226,8 @@ ipn3ke_rpst_dev_close(struct rte_eth_dev *dev)
 		/* Disable the RX path */
 		ipn3ke_xmac_rx_disable(hw, rpst->port_id, 0);
 	}
+
+	return 0;
 }
 
 /*
@@ -699,7 +708,7 @@ struct ipn3ke_rpst_hw_port_stats *hw_stats)
 		&tmp,
 		IPN3KE_25G_TX_STATISTICS_STATUS,
 		port_id,
-		1);
+		0);
 	if (tmp & IPN3KE_25G_TX_STATISTICS_STATUS_SHADOW_REQUEST_MASK) {
 		tmp = 0x00000000;
 		(*hw->f_mac_read)(hw,
@@ -2045,7 +2054,7 @@ uint16_t port_id)
 		0);
 }
 
-static void
+static int
 ipn3ke_rpst_stats_reset(struct rte_eth_dev *ethdev)
 {
 	uint16_t port_id = 0;
@@ -2056,18 +2065,18 @@ ipn3ke_rpst_stats_reset(struct rte_eth_dev *ethdev)
 
 	if (!ethdev) {
 		IPN3KE_AFU_PMD_ERR("ethernet device to reset is NULL!");
-		return;
+		return -EINVAL;
 	}
 
 	afu_dev = RTE_ETH_DEV_TO_AFU(ethdev);
 	if (!afu_dev) {
 		IPN3KE_AFU_PMD_ERR("afu device to reset is NULL!");
-		return;
+		return -EINVAL;
 	}
 
 	if (!afu_dev->shared.data) {
 		IPN3KE_AFU_PMD_ERR("hardware data to reset is NULL!");
-		return;
+		return -EINVAL;
 	}
 
 	hw = afu_dev->shared.data;
@@ -2075,7 +2084,7 @@ ipn3ke_rpst_stats_reset(struct rte_eth_dev *ethdev)
 	ch = ethdev->data->name;
 	if (!ch) {
 		IPN3KE_AFU_PMD_ERR("ethdev name is NULL!");
-		return;
+		return -EINVAL;
 	}
 	while (ch) {
 		if (*ch == '_')
@@ -2086,7 +2095,7 @@ ipn3ke_rpst_stats_reset(struct rte_eth_dev *ethdev)
 	}
 	if (!ch) {
 		IPN3KE_AFU_PMD_ERR("Can not get port_id from ethdev name!");
-		return;
+		return -EINVAL;
 	}
 	port_id = atoi(ch);
 
@@ -2102,6 +2111,8 @@ ipn3ke_rpst_stats_reset(struct rte_eth_dev *ethdev)
 		ipn3ke_rpst_10g_lineside_tx_stats_reset(hw, port_id);
 		ipn3ke_rpst_10g_lineside_rx_stats_reset(hw, port_id);
 	}
+
+	return 0;
 }
 
 static int
@@ -2594,7 +2605,8 @@ ipn3ke_rpst_scan_check(void)
 	int ret;
 
 	if (ipn3ke_rpst_scan_num == 1) {
-		ret = pthread_create(&ipn3ke_rpst_scan_thread,
+		ret = rte_ctrl_thread_create(&ipn3ke_rpst_scan_thread,
+			"ipn3ke scanner",
 			NULL,
 			ipn3ke_rpst_scan_handle_request, NULL);
 		if (ret) {
@@ -2616,7 +2628,7 @@ ipn3ke_rpst_scan_check(void)
 	return 0;
 }
 
-void
+int
 ipn3ke_rpst_promiscuous_enable(struct rte_eth_dev *ethdev)
 {
 	struct ipn3ke_hw *hw = IPN3KE_DEV_PRIVATE_TO_HW(ethdev);
@@ -2639,9 +2651,11 @@ ipn3ke_rpst_promiscuous_enable(struct rte_eth_dev *ethdev)
 				rpst->port_id,
 				0);
 	}
+
+	return 0;
 }
 
-void
+int
 ipn3ke_rpst_promiscuous_disable(struct rte_eth_dev *ethdev)
 {
 	struct ipn3ke_hw *hw = IPN3KE_DEV_PRIVATE_TO_HW(ethdev);
@@ -2664,9 +2678,11 @@ ipn3ke_rpst_promiscuous_disable(struct rte_eth_dev *ethdev)
 				rpst->port_id,
 				0);
 	}
+
+	return 0;
 }
 
-void
+int
 ipn3ke_rpst_allmulticast_enable(struct rte_eth_dev *ethdev)
 {
 	struct ipn3ke_hw *hw = IPN3KE_DEV_PRIVATE_TO_HW(ethdev);
@@ -2690,9 +2706,11 @@ ipn3ke_rpst_allmulticast_enable(struct rte_eth_dev *ethdev)
 				rpst->port_id,
 				0);
 	}
+
+	return 0;
 }
 
-void
+int
 ipn3ke_rpst_allmulticast_disable(struct rte_eth_dev *ethdev)
 {
 	struct ipn3ke_hw *hw = IPN3KE_DEV_PRIVATE_TO_HW(ethdev);
@@ -2716,6 +2734,8 @@ ipn3ke_rpst_allmulticast_disable(struct rte_eth_dev *ethdev)
 				rpst->port_id,
 				0);
 	}
+
+	return 0;
 }
 
 int
@@ -2781,7 +2801,7 @@ ipn3ke_rpst_mtu_set(struct rte_eth_dev *ethdev, uint16_t mtu)
 		return -EBUSY;
 	}
 
-	if (frame_size > RTE_ETHER_MAX_LEN)
+	if (frame_size > IPN3KE_ETH_MAX_LEN)
 		dev_data->dev_conf.rxmode.offloads |=
 			(uint64_t)(DEV_RX_OFFLOAD_JUMBO_FRAME);
 	else
@@ -2902,12 +2922,18 @@ ipn3ke_rpst_init(struct rte_eth_dev *ethdev, void *init_params)
 	if (representor_param->port_id >= representor_param->hw->port_num)
 		return -ENODEV;
 
+	if (ipn3ke_bridge_func.set_i40e_sw_dev == NULL)
+		return -ENOMEM;
+
 	rpst->ethdev = ethdev;
 	rpst->switch_domain_id = representor_param->switch_domain_id;
 	rpst->port_id = representor_param->port_id;
 	rpst->hw = representor_param->hw;
-	rpst->i40e_pf_eth = NULL;
-	rpst->i40e_pf_eth_port_id = 0xFFFF;
+	rpst->i40e_pf_eth = representor_param->i40e_pf_eth;
+	rpst->i40e_pf_eth_port_id = representor_param->i40e_pf_eth_port_id;
+	if (rpst->i40e_pf_eth)
+		ipn3ke_bridge_func.set_i40e_sw_dev(rpst->i40e_pf_eth_port_id,
+					    rpst->ethdev);
 
 	ethdev->data->mac_addrs = rte_zmalloc("ipn3ke", RTE_ETHER_ADDR_LEN, 0);
 	if (!ethdev->data->mac_addrs) {
@@ -2940,7 +2966,8 @@ ipn3ke_rpst_init(struct rte_eth_dev *ethdev, void *init_params)
 		return -ENODEV;
 	}
 
-	ethdev->data->dev_flags |= RTE_ETH_DEV_REPRESENTOR;
+	ethdev->data->dev_flags |= RTE_ETH_DEV_REPRESENTOR |
+					RTE_ETH_DEV_AUTOFILL_QUEUE_XSTATS;
 
 	rte_spinlock_lock(&ipn3ke_link_notify_list_lk);
 	TAILQ_INSERT_TAIL(&ipn3ke_rpst_list, rpst, next);

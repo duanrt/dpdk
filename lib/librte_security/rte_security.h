@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright 2017 NXP.
- * Copyright(c) 2017 Intel Corporation.
+ * Copyright 2017,2019-2020 NXP
+ * Copyright(c) 2017-2020 Intel Corporation.
  */
 
 #ifndef _RTE_SECURITY_H_
@@ -27,6 +27,7 @@ extern "C" {
 #include <rte_common.h>
 #include <rte_crypto.h>
 #include <rte_mbuf.h>
+#include <rte_mbuf_dyn.h>
 #include <rte_memory.h>
 #include <rte_mempool.h>
 
@@ -115,14 +116,14 @@ struct rte_security_ipsec_tunnel_param {
  * IPsec Security Association option flags
  */
 struct rte_security_ipsec_sa_options {
-	/**< Extended Sequence Numbers (ESN)
+	/** Extended Sequence Numbers (ESN)
 	 *
 	 * * 1: Use extended (64 bit) sequence numbers
 	 * * 0: Use normal sequence numbers
 	 */
 	uint32_t esn : 1;
 
-	/**< UDP encapsulation
+	/** UDP encapsulation
 	 *
 	 * * 1: Do UDP encapsulation/decapsulation so that IPSEC packets can
 	 *      traverse through NAT boxes.
@@ -130,7 +131,7 @@ struct rte_security_ipsec_sa_options {
 	 */
 	uint32_t udp_encap : 1;
 
-	/**< Copy DSCP bits
+	/** Copy DSCP bits
 	 *
 	 * * 1: Copy IPv4 or IPv6 DSCP bits from inner IP header to
 	 *      the outer IP header in encapsulation, and vice versa in
@@ -139,7 +140,7 @@ struct rte_security_ipsec_sa_options {
 	 */
 	uint32_t copy_dscp : 1;
 
-	/**< Copy IPv6 Flow Label
+	/** Copy IPv6 Flow Label
 	 *
 	 * * 1: Copy IPv6 flow label from inner IPv6 header to the
 	 *      outer IPv6 header.
@@ -147,7 +148,7 @@ struct rte_security_ipsec_sa_options {
 	 */
 	uint32_t copy_flabel : 1;
 
-	/**< Copy IPv4 Don't Fragment bit
+	/** Copy IPv4 Don't Fragment bit
 	 *
 	 * * 1: Copy the DF bit from the inner IPv4 header to the outer
 	 *      IPv4 header.
@@ -155,7 +156,7 @@ struct rte_security_ipsec_sa_options {
 	 */
 	uint32_t copy_df : 1;
 
-	/**< Decrement inner packet Time To Live (TTL) field
+	/** Decrement inner packet Time To Live (TTL) field
 	 *
 	 * * 1: In tunnel mode, decrement inner packet IPv4 TTL or
 	 *      IPv6 Hop Limit after tunnel decapsulation, or before tunnel
@@ -164,7 +165,7 @@ struct rte_security_ipsec_sa_options {
 	 */
 	uint32_t dec_ttl : 1;
 
-	/**< Explicit Congestion Notification (ECN)
+	/** Explicit Congestion Notification (ECN)
 	 *
 	 * * 1: In tunnel mode, enable outer header ECN Field copied from
 	 *      inner header in tunnel encapsulation, or inner header ECN
@@ -172,6 +173,14 @@ struct rte_security_ipsec_sa_options {
 	 * * 0: Inner/outer header are not modified.
 	 */
 	uint32_t ecn : 1;
+
+	/** Security statistics
+	 *
+	 * * 1: Enable per session security statistics collection for
+	 *      this SA, if supported by the driver.
+	 * * 0: Disable per session security statistics collection for this SA.
+	 */
+	uint32_t stats : 1;
 };
 
 /** IPSec security association direction */
@@ -204,6 +213,10 @@ struct rte_security_ipsec_xform {
 	/**< Tunnel parameters, NULL for transport mode */
 	uint64_t esn_soft_limit;
 	/**< ESN for which the overflow event need to be raised */
+	uint32_t replay_win_sz;
+	/**< Anti replay window size to enable sequence replay attack handling.
+	 * replay checking is disabled if the window size is 0.
+	 */
 };
 
 /**
@@ -270,6 +283,45 @@ struct rte_security_pdcp_xform {
 	uint32_t hfn;
 	/** HFN Threshold for key renegotiation */
 	uint32_t hfn_threshold;
+	/** HFN can be given as a per packet value also.
+	 * As we do not have IV in case of PDCP, and HFN is
+	 * used to generate IV. IV field can be used to get the
+	 * per packet HFN while enq/deq.
+	 * If hfn_ovrd field is set, user is expected to set the
+	 * per packet HFN in place of IV. PMDs will extract the HFN
+	 * and perform operations accordingly.
+	 */
+	uint8_t hfn_ovrd;
+	/** In case of 5G NR, a new protocol (SDAP) header may be set
+	 * inside PDCP payload which should be authenticated but not
+	 * encrypted. Hence, driver should be notified if SDAP is
+	 * enabled or not, so that SDAP header is not encrypted.
+	 */
+	uint8_t sdap_enabled;
+	/** Reserved for future */
+	uint16_t reserved;
+};
+
+/** DOCSIS direction */
+enum rte_security_docsis_direction {
+	RTE_SECURITY_DOCSIS_UPLINK,
+	/**< Uplink
+	 * - Decryption, followed by CRC Verification
+	 */
+	RTE_SECURITY_DOCSIS_DOWNLINK,
+	/**< Downlink
+	 * - CRC Generation, followed by Encryption
+	 */
+};
+
+/**
+ * DOCSIS security session configuration.
+ *
+ * This structure contains data required to create a DOCSIS security session.
+ */
+struct rte_security_docsis_xform {
+	enum rte_security_docsis_direction direction;
+	/**< DOCSIS direction */
 };
 
 /**
@@ -286,9 +338,13 @@ enum rte_security_session_action_type {
 	/**< All security protocol processing is performed inline during
 	 * transmission
 	 */
-	RTE_SECURITY_ACTION_TYPE_LOOKASIDE_PROTOCOL
+	RTE_SECURITY_ACTION_TYPE_LOOKASIDE_PROTOCOL,
 	/**< All security protocol processing including crypto is performed
 	 * on a lookaside accelerator
+	 */
+	RTE_SECURITY_ACTION_TYPE_CPU_CRYPTO
+	/**< Similar to ACTION_TYPE_NONE but crypto processing for security
+	 * protocol is processed synchronously by a CPU.
 	 */
 };
 
@@ -300,6 +356,8 @@ enum rte_security_session_protocol {
 	/**< MACSec Protocol */
 	RTE_SECURITY_PROTOCOL_PDCP,
 	/**< PDCP Protocol */
+	RTE_SECURITY_PROTOCOL_DOCSIS,
+	/**< DOCSIS Protocol */
 };
 
 /**
@@ -315,6 +373,7 @@ struct rte_security_session_conf {
 		struct rte_security_ipsec_xform ipsec;
 		struct rte_security_macsec_xform macsec;
 		struct rte_security_pdcp_xform pdcp;
+		struct rte_security_docsis_xform docsis;
 	};
 	/**< Configuration parameters for security session */
 	struct rte_crypto_sym_xform *crypto_xform;
@@ -336,6 +395,7 @@ struct rte_security_session {
  * @param   instance	security instance
  * @param   conf	session configuration parameters
  * @param   mp		mempool to allocate session objects from
+ * @param   priv_mp	mempool to allocate session private data objects from
  * @return
  *  - On success, pointer to session
  *  - On failure, NULL
@@ -343,7 +403,8 @@ struct rte_security_session {
 struct rte_security_session *
 rte_security_session_create(struct rte_security_ctx *instance,
 			    struct rte_security_session_conf *conf,
-			    struct rte_mempool *mp);
+			    struct rte_mempool *mp,
+			    struct rte_mempool *priv_mp);
 
 /**
  * Update security session as specified by the session configuration
@@ -353,7 +414,7 @@ rte_security_session_create(struct rte_security_ctx *instance,
  * @param   conf	update configuration parameters
  * @return
  *  - On success returns 0
- *  - On failure return errno
+ *  - On failure returns a negative errno value.
  */
 __rte_experimental
 int
@@ -378,16 +439,59 @@ rte_security_session_get_size(struct rte_security_ctx *instance);
  * return it to its original mempool.
  *
  * @param   instance	security instance
- * @param   sess	security session to freed
+ * @param   sess	security session to be freed
  *
  * @return
  *  - 0 if successful.
- *  - -EINVAL if session is NULL.
+ *  - -EINVAL if session or context instance is NULL.
  *  - -EBUSY if not all device private data has been freed.
+ *  - -ENOTSUP if destroying private data is not supported.
+ *  - other negative values in case of freeing private data errors.
  */
 int
 rte_security_session_destroy(struct rte_security_ctx *instance,
 			     struct rte_security_session *sess);
+
+/** Device-specific metadata field type */
+typedef uint64_t rte_security_dynfield_t;
+/** Dynamic mbuf field for device-specific metadata */
+extern int rte_security_dynfield_offset;
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice
+ *
+ * Get pointer to mbuf field for device-specific metadata.
+ *
+ * For performance reason, no check is done,
+ * the dynamic field may not be registered.
+ * @see rte_security_dynfield_is_registered
+ *
+ * @param	mbuf	packet to access
+ * @return pointer to mbuf field
+ */
+__rte_experimental
+static inline rte_security_dynfield_t *
+rte_security_dynfield(struct rte_mbuf *mbuf)
+{
+	return RTE_MBUF_DYNFIELD(mbuf,
+		rte_security_dynfield_offset,
+		rte_security_dynfield_t *);
+}
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice
+ *
+ * Check whether the dynamic field is registered.
+ *
+ * @return true if rte_security_dynfield_register() has been called.
+ */
+__rte_experimental
+static inline bool rte_security_dynfield_is_registered(void)
+{
+	return rte_security_dynfield_offset >= 0;
+}
 
 /**
  *  Updates the buffer with device-specific defined metadata
@@ -482,11 +586,21 @@ struct rte_security_macsec_stats {
 };
 
 struct rte_security_ipsec_stats {
-	uint64_t reserved;
-
+	uint64_t ipackets;  /**< Successfully received IPsec packets. */
+	uint64_t opackets;  /**< Successfully transmitted IPsec packets.*/
+	uint64_t ibytes;    /**< Successfully received IPsec bytes. */
+	uint64_t obytes;    /**< Successfully transmitted IPsec bytes. */
+	uint64_t ierrors;   /**< IPsec packets receive/decrypt errors. */
+	uint64_t oerrors;   /**< IPsec packets transmit/encrypt errors. */
+	uint64_t reserved1; /**< Reserved for future use. */
+	uint64_t reserved2; /**< Reserved for future use. */
 };
 
 struct rte_security_pdcp_stats {
+	uint64_t reserved;
+};
+
+struct rte_security_docsis_stats {
 	uint64_t reserved;
 };
 
@@ -499,6 +613,7 @@ struct rte_security_stats {
 		struct rte_security_macsec_stats macsec;
 		struct rte_security_ipsec_stats ipsec;
 		struct rte_security_pdcp_stats pdcp;
+		struct rte_security_docsis_stats docsis;
 	};
 };
 
@@ -507,10 +622,13 @@ struct rte_security_stats {
  *
  * @param	instance	security instance
  * @param	sess		security session
+ * If security session is NULL then global (per security instance) statistics
+ * will be retrieved, if supported. Global statistics collection is not
+ * dependent on the per session statistics configuration.
  * @param	stats		statistics
  * @return
- *  - On success return 0
- *  - On failure errno
+ *  - On success, return 0
+ *  - On failure, a negative value
  */
 __rte_experimental
 int
@@ -537,6 +655,10 @@ struct rte_security_capability {
 			/**< IPsec SA direction */
 			struct rte_security_ipsec_sa_options options;
 			/**< IPsec SA supported options */
+			uint32_t replay_win_sz_max;
+			/**< IPsec Anti Replay Window Size. A '0' value
+			 * indicates that Anti Replay is not supported.
+			 */
 		} ipsec;
 		/**< IPsec capability */
 		struct {
@@ -551,6 +673,11 @@ struct rte_security_capability {
 			/**< Capability flags, see RTE_SECURITY_PDCP_* */
 		} pdcp;
 		/**< PDCP capability */
+		struct {
+			enum rte_security_docsis_direction direction;
+			/**< DOCSIS direction */
+		} docsis;
+		/**< DOCSIS capability */
 	};
 
 	const struct rte_cryptodev_capabilities *crypto_capabilities;
@@ -609,6 +736,9 @@ struct rte_security_capability_idx {
 			enum rte_security_pdcp_domain domain;
 			uint32_t capa_flags;
 		} pdcp;
+		struct {
+			enum rte_security_docsis_direction direction;
+		} docsis;
 	};
 };
 

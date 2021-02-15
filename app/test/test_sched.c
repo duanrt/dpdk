@@ -21,18 +21,7 @@
 #define PIPE            1
 #define TC              2
 #define QUEUE           0
-
-static struct rte_sched_subport_params subport_param[] = {
-	{
-		.tb_rate = 1250000000,
-		.tb_size = 1000000,
-
-		.tc_rate = {1250000000, 1250000000, 1250000000, 1250000000,
-			1250000000, 1250000000, 1250000000, 1250000000, 1250000000,
-			1250000000, 1250000000, 1250000000, 1250000000},
-		.tc_period = 10,
-	},
-};
+#define MAX_SCHED_SUBPORT_PROFILES  8
 
 static struct rte_sched_pipe_params pipe_profile[] = {
 	{ /* Profile #0 */
@@ -48,17 +37,38 @@ static struct rte_sched_pipe_params pipe_profile[] = {
 	},
 };
 
+static struct rte_sched_subport_profile_params
+		subport_profile[] = {
+	{
+		.tb_rate = 1250000000,
+		.tb_size = 1000000,
+		.tc_rate = {1250000000, 1250000000, 1250000000, 1250000000,
+			1250000000, 1250000000, 1250000000, 1250000000, 1250000000,
+			1250000000, 1250000000, 1250000000, 1250000000},
+		.tc_period = 10,
+	},
+};
+
+static struct rte_sched_subport_params subport_param[] = {
+	{
+		.n_pipes_per_subport_enabled = 1024,
+		.qsize = {32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32},
+		.pipe_profiles = pipe_profile,
+		.n_pipe_profiles = 1,
+		.n_max_pipe_profiles = 1,
+	},
+};
+
 static struct rte_sched_port_params port_param = {
 	.socket = 0, /* computed */
 	.rate = 0, /* computed */
 	.mtu = 1522,
 	.frame_overhead = RTE_SCHED_FRAME_OVERHEAD_DEFAULT,
 	.n_subports_per_port = 1,
+	.n_subport_profiles = 1,
+	.subport_profiles = subport_profile,
+	.n_max_subport_profiles = MAX_SCHED_SUBPORT_PROFILES,
 	.n_pipes_per_subport = 1024,
-	.qsize = {32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32},
-	.pipe_profiles = pipe_profile,
-	.n_pipe_profiles = 1,
-	.n_max_pipe_profiles = 1,
 };
 
 #define NB_MBUF          32
@@ -137,10 +147,10 @@ test_sched(void)
 	port = rte_sched_port_config(&port_param);
 	TEST_ASSERT_NOT_NULL(port, "Error config sched port\n");
 
-	err = rte_sched_subport_config(port, SUBPORT, subport_param);
+	err = rte_sched_subport_config(port, SUBPORT, subport_param, 0);
 	TEST_ASSERT_SUCCESS(err, "Error config sched, err=%d\n", err);
 
-	for (pipe = 0; pipe < port_param.n_pipes_per_subport; pipe ++) {
+	for (pipe = 0; pipe < subport_param[0].n_pipes_per_subport_enabled; pipe++) {
 		err = rte_sched_pipe_config(port, SUBPORT, pipe, 0);
 		TEST_ASSERT_SUCCESS(err, "Error config sched pipe %u, err=%d\n", pipe, err);
 	}

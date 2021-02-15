@@ -155,10 +155,6 @@ static struct mcast_group_params mcast_group_table[] = {
 		{RTE_IPV4(224,0,0,115), 0xF},
 };
 
-#define N_MCAST_GROUPS \
-	(sizeof (mcast_group_table) / sizeof (mcast_group_table[0]))
-
-
 /* Send burst of packets on an output interface */
 static void
 send_burst(struct lcore_queue_conf *qconf, uint16_t port)
@@ -555,7 +551,7 @@ init_mcast_hash(void)
 		return -1;
 	}
 
-	for (i = 0; i < N_MCAST_GROUPS; i ++){
+	for (i = 0; i < RTE_DIM(mcast_group_table); i++) {
 		if (rte_fbk_hash_add_key(mcast_hash,
 			mcast_group_table[i].ip,
 			mcast_group_table[i].port_mask) < 0) {
@@ -575,6 +571,8 @@ check_all_ports_link_status(uint32_t port_mask)
 	uint16_t portid;
 	uint8_t count, all_ports_up, print_flag = 0;
 	struct rte_eth_link link;
+	int ret;
+	char link_status_text[RTE_ETH_LINK_MAX_STR_LEN];
 
 	printf("\nChecking link status");
 	fflush(stdout);
@@ -584,17 +582,21 @@ check_all_ports_link_status(uint32_t port_mask)
 			if ((port_mask & (1 << portid)) == 0)
 				continue;
 			memset(&link, 0, sizeof(link));
-			rte_eth_link_get_nowait(portid, &link);
+			ret = rte_eth_link_get_nowait(portid, &link);
+			if (ret < 0) {
+				all_ports_up = 0;
+				if (print_flag == 1)
+					printf("Port %u link get failed: %s\n",
+						portid, rte_strerror(-ret));
+				continue;
+			}
 			/* print link status if flag set */
 			if (print_flag == 1) {
-				if (link.link_status)
-					printf(
-					"Port%d Link Up. Speed %u Mbps - %s\n",
-					portid, link.link_speed,
-				(link.link_duplex == ETH_LINK_FULL_DUPLEX) ?
-					("full-duplex") : ("half-duplex\n"));
-				else
-					printf("Port %d Link Down\n", portid);
+				rte_eth_link_to_str(link_status_text,
+					sizeof(link_status_text),
+					&link);
+				printf("Port %d %s\n", portid,
+				       link_status_text);
 				continue;
 			}
 			/* clear all_ports_up flag if any link down */
@@ -686,7 +688,12 @@ main(int argc, char **argv)
 		qconf = &lcore_queue_conf[rx_lcore_id];
 
 		/* limit the frame size to the maximum supported by NIC */
-		rte_eth_dev_info_get(portid, &dev_info);
+		ret = rte_eth_dev_info_get(portid, &dev_info);
+		if (ret != 0)
+			rte_exit(EXIT_FAILURE,
+				"Error during getting device (port %u) info: %s\n",
+				portid, strerror(-ret));
+
 		local_port_conf.rxmode.max_rx_pkt_len = RTE_MIN(
 		    dev_info.max_rx_pktlen,
 		    local_port_conf.rxmode.max_rx_pkt_len);
@@ -726,7 +733,12 @@ main(int argc, char **argv)
 				 "Cannot adjust number of descriptors: err=%d, port=%d\n",
 				 ret, portid);
 
-		rte_eth_macaddr_get(portid, &ports_eth_addr[portid]);
+		ret = rte_eth_macaddr_get(portid, &ports_eth_addr[portid]);
+		if (ret < 0)
+			rte_exit(EXIT_FAILURE,
+				 "Cannot get MAC address: err=%d, port=%d\n",
+				 ret, portid);
+
 		print_ethaddr(" Address:", &ports_eth_addr[portid]);
 		printf(", ");
 
@@ -765,7 +777,11 @@ main(int argc, char **argv)
 			qconf->tx_queue_id[portid] = queueid;
 			queueid++;
 		}
-		rte_eth_allmulticast_enable(portid);
+		ret = rte_eth_allmulticast_enable(portid);
+		if (ret < 0)
+			rte_exit(EXIT_FAILURE,
+				"rte_eth_allmulticast_enable: err=%d, port=%d\n",
+				ret, portid);
 		/* Start device */
 		ret = rte_eth_dev_start(portid);
 		if (ret < 0)
@@ -783,8 +799,8 @@ main(int argc, char **argv)
 		rte_exit(EXIT_FAILURE, "Cannot build the multicast hash\n");
 
 	/* launch per-lcore init on every lcore */
-	rte_eal_mp_remote_launch(main_loop, NULL, CALL_MASTER);
-	RTE_LCORE_FOREACH_SLAVE(lcore_id) {
+	rte_eal_mp_remote_launch(main_loop, NULL, CALL_MAIN);
+	RTE_LCORE_FOREACH_WORKER(lcore_id) {
 		if (rte_eal_wait_lcore(lcore_id) < 0)
 			return -1;
 	}

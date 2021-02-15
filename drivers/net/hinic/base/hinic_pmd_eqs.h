@@ -9,6 +9,10 @@
 
 #define HINIC_AEQN_START		0
 #define HINIC_MAX_AEQS			4
+#define HINIC_MIN_AEQS			2
+#define HINIC_AEQN_0			0
+#define HINIC_AEQN_1			1
+#define HINIC_AEQN_2			2
 
 #define HINIC_EQ_MAX_PAGES		8
 
@@ -20,9 +24,6 @@
 			(HINIC_AEQE_SIZE - HINIC_AEQE_DESC_SIZE)
 
 #define HINIC_DEFAULT_AEQ_LEN		64
-
-#define HINIC_RECV_NEXT_AEQE		HINIC_ERROR
-#define HINIC_RECV_DONE			HINIC_OK
 
 #define GET_EQ_ELEMENT(eq, idx)		\
 		(((u8 *)(eq)->virt_addr[(idx) / (eq)->num_elem_in_pg]) + \
@@ -58,7 +59,7 @@ enum hinic_aeq_type {
 struct hinic_eq {
 	struct hinic_hwdev		*hwdev;
 	u16				q_id;
-	enum hinic_eq_type		type;
+	u16				type;
 	u32				page_size;
 	u16				eq_len;
 

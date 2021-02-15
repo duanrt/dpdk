@@ -45,7 +45,7 @@ static uint64_t eid = ~0ULL;
 static uint32_t tid;
 
 static inline int
-port_init_common(uint8_t port, const struct rte_eth_conf *port_conf,
+port_init_common(uint16_t port, const struct rte_eth_conf *port_conf,
 		struct rte_mempool *mp)
 {
 	const uint16_t rx_ring_size = RING_SIZE, tx_ring_size = RING_SIZE;
@@ -85,7 +85,9 @@ port_init_common(uint8_t port, const struct rte_eth_conf *port_conf,
 
 	/* Display the port MAC address. */
 	struct rte_ether_addr addr;
-	rte_eth_macaddr_get(port, &addr);
+	retval = rte_eth_macaddr_get(port, &addr);
+	if (retval < 0)
+		return retval;
 	printf("Port %u MAC: %02" PRIx8 " %02" PRIx8 " %02" PRIx8
 			   " %02" PRIx8 " %02" PRIx8 " %02" PRIx8 "\n",
 			(unsigned int)port,
@@ -94,13 +96,15 @@ port_init_common(uint8_t port, const struct rte_eth_conf *port_conf,
 			addr.addr_bytes[4], addr.addr_bytes[5]);
 
 	/* Enable RX in promiscuous mode for the Ethernet device. */
-	rte_eth_promiscuous_enable(port);
+	retval = rte_eth_promiscuous_enable(port);
+	if (retval != 0)
+		return retval;
 
 	return 0;
 }
 
 static inline int
-port_init(uint8_t port, struct rte_mempool *mp)
+port_init(uint16_t port, struct rte_mempool *mp)
 {
 	struct rte_eth_conf conf = { 0 };
 	return port_init_common(port, &conf, mp);

@@ -4,7 +4,6 @@
 
 #include <stdio.h>
 #include <stdlib.h>
-#include <sys/un.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <inttypes.h>
@@ -28,12 +27,13 @@
 #include <libvirt/libvirt.h>
 
 #include "channel_manager.h"
-#include "channel_commands.h"
 #include "channel_monitor.h"
 #include "power_manager.h"
 
 
 #define RTE_LOGTYPE_CHANNEL_MANAGER RTE_LOGTYPE_USER1
+
+struct libvirt_vm_info lvm_info[MAX_CLIENTS];
 
 /* Global pointer to libvirt connection */
 static virConnectPtr global_vir_conn_ptr;
@@ -58,6 +58,7 @@ struct virtual_machine_info {
 	virDomainPtr domainPtr;
 	virDomainInfo info;
 	rte_spinlock_t config_spinlock;
+	int allow_query;
 	LIST_ENTRY(virtual_machine_info) vms_info;
 };
 
@@ -453,6 +454,9 @@ add_all_channels(const char *vm_name)
 					CHANNEL_MGR_SOCKET_PATH, dir->d_name);
 			continue;
 		}
+		if (rte_lcore_index(channel_num) == -1)
+			continue;
+
 		/* if channel has not been added previously */
 		if (channel_exists(vm_info, channel_num))
 			continue;
@@ -465,9 +469,15 @@ add_all_channels(const char *vm_name)
 			continue;
 		}
 
-		snprintf(chan_info->channel_path,
+		if ((size_t)snprintf(chan_info->channel_path,
 				sizeof(chan_info->channel_path), "%s%s",
-				CHANNEL_MGR_SOCKET_PATH, dir->d_name);
+				CHANNEL_MGR_SOCKET_PATH, dir->d_name)
+					>= sizeof(chan_info->channel_path)) {
+			RTE_LOG(ERR, CHANNEL_MANAGER, "Pathname too long for channel '%s%s'\n",
+					CHANNEL_MGR_SOCKET_PATH, dir->d_name);
+			rte_free(chan_info);
+			continue;
+		}
 
 		if (setup_channel_info(&vm_info, &chan_info, channel_num) < 0) {
 			rte_free(chan_info);
@@ -504,6 +514,8 @@ add_channels(const char *vm_name, unsigned *channel_list,
 	}
 
 	for (i = 0; i < len_channel_list; i++) {
+		if (rte_lcore_index(i) == -1)
+			continue;
 
 		if (channel_list[i] >= RTE_MAX_LCORE) {
 			RTE_LOG(INFO, CHANNEL_MANAGER, "Channel(%u) is out of range "
@@ -566,6 +578,9 @@ add_host_channels(void)
 	}
 
 	for (i = 0; i < ci->core_count; i++) {
+		if (rte_lcore_index(i) == -1)
+			continue;
+
 		if (ci->cd[i].global_enabled_cpus == 0)
 			continue;
 
@@ -791,6 +806,7 @@ get_info_vm(const char *vm_name, struct vm_info *info)
 		channel_num++;
 	}
 
+	info->allow_query = vm_info->allow_query;
 	info->num_channels = channel_num;
 	info->num_vcpus = vm_info->info.nrVirtCpu;
 	rte_spinlock_unlock(&(vm_info->config_spinlock));
@@ -867,6 +883,7 @@ add_vm(const char *vm_name)
 	else
 		new_domain->status = CHANNEL_MGR_VM_ACTIVE;
 
+	new_domain->allow_query = 0;
 	rte_spinlock_init(&(new_domain->config_spinlock));
 	LIST_INSERT_HEAD(&vm_list_head, new_domain, vms_info);
 	return 0;
@@ -893,6 +910,23 @@ remove_vm(const char *vm_name)
 	LIST_REMOVE(vm_info, vms_info);
 	rte_spinlock_unlock(&vm_info->config_spinlock);
 	rte_free(vm_info);
+	return 0;
+}
+
+int
+set_query_status(char *vm_name,
+		bool allow_query)
+{
+	struct virtual_machine_info *vm_info;
+
+	vm_info = find_domain_by_name(vm_name);
+	if (vm_info == NULL) {
+		RTE_LOG(ERR, CHANNEL_MANAGER, "VM '%s' not found\n", vm_name);
+		return -1;
+	}
+	rte_spinlock_lock(&(vm_info->config_spinlock));
+	vm_info->allow_query = allow_query ? 1 : 0;
+	rte_spinlock_unlock(&(vm_info->config_spinlock));
 	return 0;
 }
 

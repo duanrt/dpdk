@@ -14,6 +14,7 @@
 #include <rte_esp.h>
 #include <rte_tcp.h>
 #include <rte_udp.h>
+#include <rte_vxlan.h>
 #include <rte_cryptodev.h>
 #include <rte_cryptodev_pmd.h>
 
@@ -63,7 +64,7 @@ lb_cfg_check(struct rte_table_action_lb_config *cfg)
 
 struct lb_data {
 	uint32_t out[RTE_TABLE_ACTION_LB_TABLE_SIZE];
-} __attribute__((__packed__));
+} __rte_packed;
 
 static int
 lb_apply(struct lb_data *data,
@@ -110,7 +111,7 @@ mtr_cfg_check(struct rte_table_action_mtr_config *mtr)
 struct mtr_trtcm_data {
 	struct rte_meter_trtcm trtcm;
 	uint64_t stats[RTE_COLORS];
-} __attribute__((__packed__));
+} __rte_packed;
 
 #define MTR_TRTCM_DATA_METER_PROFILE_ID_GET(data)          \
 	(((data)->stats[RTE_COLOR_GREEN] & 0xF8LLU) >> 3)
@@ -360,7 +361,7 @@ tm_cfg_check(struct rte_table_action_tm_config *tm)
 struct tm_data {
 	uint32_t queue_id;
 	uint32_t reserved;
-} __attribute__((__packed__));
+} __rte_packed;
 
 static int
 tm_apply_check(struct rte_table_action_tm_params *p,
@@ -438,7 +439,7 @@ encap_cfg_check(struct rte_table_action_encap_config *encap)
 
 struct encap_ether_data {
 	struct rte_ether_hdr ether;
-} __attribute__((__packed__));
+};
 
 #define VLAN(pcp, dei, vid)                                \
 	((uint16_t)((((uint64_t)(pcp)) & 0x7LLU) << 13) |  \
@@ -448,13 +449,13 @@ struct encap_ether_data {
 struct encap_vlan_data {
 	struct rte_ether_hdr ether;
 	struct rte_vlan_hdr vlan;
-} __attribute__((__packed__));
+};
 
 struct encap_qinq_data {
 	struct rte_ether_hdr ether;
 	struct rte_vlan_hdr svlan;
 	struct rte_vlan_hdr cvlan;
-} __attribute__((__packed__));
+};
 
 #define ETHER_TYPE_MPLS_UNICAST                            0x8847
 
@@ -470,7 +471,7 @@ struct encap_mpls_data {
 	struct rte_ether_hdr ether;
 	uint32_t mpls[RTE_TABLE_ACTION_MPLS_LABELS_MAX];
 	uint32_t mpls_count;
-} __attribute__((__packed__));
+} __rte_packed __rte_aligned(2);
 
 #define PPP_PROTOCOL_IP                                    0x0021
 
@@ -479,12 +480,12 @@ struct pppoe_ppp_hdr {
 	uint16_t session_id;
 	uint16_t length;
 	uint16_t protocol;
-} __attribute__((__packed__));
+};
 
 struct encap_pppoe_data {
 	struct rte_ether_hdr ether;
 	struct pppoe_ppp_hdr pppoe_ppp;
-} __attribute__((__packed__));
+};
 
 #define IP_PROTO_UDP                                       17
 
@@ -493,7 +494,7 @@ struct encap_vxlan_ipv4_data {
 	struct rte_ipv4_hdr ipv4;
 	struct rte_udp_hdr udp;
 	struct rte_vxlan_hdr vxlan;
-} __attribute__((__packed__));
+} __rte_packed __rte_aligned(2);
 
 struct encap_vxlan_ipv4_vlan_data {
 	struct rte_ether_hdr ether;
@@ -501,14 +502,14 @@ struct encap_vxlan_ipv4_vlan_data {
 	struct rte_ipv4_hdr ipv4;
 	struct rte_udp_hdr udp;
 	struct rte_vxlan_hdr vxlan;
-} __attribute__((__packed__));
+} __rte_packed __rte_aligned(2);
 
 struct encap_vxlan_ipv6_data {
 	struct rte_ether_hdr ether;
 	struct rte_ipv6_hdr ipv6;
 	struct rte_udp_hdr udp;
 	struct rte_vxlan_hdr vxlan;
-} __attribute__((__packed__));
+} __rte_packed __rte_aligned(2);
 
 struct encap_vxlan_ipv6_vlan_data {
 	struct rte_ether_hdr ether;
@@ -516,14 +517,14 @@ struct encap_vxlan_ipv6_vlan_data {
 	struct rte_ipv6_hdr ipv6;
 	struct rte_udp_hdr udp;
 	struct rte_vxlan_hdr vxlan;
-} __attribute__((__packed__));
+} __rte_packed __rte_aligned(2);
 
 struct encap_qinq_pppoe_data {
 	struct rte_ether_hdr ether;
 	struct rte_vlan_hdr svlan;
 	struct rte_vlan_hdr cvlan;
 	struct pppoe_ppp_hdr pppoe_ppp;
-} __attribute__((__packed__));
+} __rte_packed __rte_aligned(2);
 
 static size_t
 encap_data_size(struct rte_table_action_encap_config *encap)
@@ -696,7 +697,7 @@ encap_qinq_pppoe_apply(void *data,
 	d->cvlan.vlan_tci = rte_htons(VLAN(p->qinq.cvlan.pcp,
 		p->qinq.cvlan.dei,
 		p->qinq.cvlan.vid));
-	d->cvlan.eth_proto = rte_htons(ETHER_TYPE_PPPOE_SESSION);
+	d->cvlan.eth_proto = rte_htons(RTE_ETHER_TYPE_PPPOE_SESSION);
 
 	/* PPPoE and PPP*/
 	d->pppoe_ppp.ver_type_code = rte_htons(0x1100);
@@ -747,7 +748,7 @@ encap_pppoe_apply(void *data,
 	/* Ethernet */
 	rte_ether_addr_copy(&p->pppoe.ether.da, &d->ether.d_addr);
 	rte_ether_addr_copy(&p->pppoe.ether.sa, &d->ether.s_addr);
-	d->ether.ether_type = rte_htons(ETHER_TYPE_PPPOE_SESSION);
+	d->ether.ether_type = rte_htons(RTE_ETHER_TYPE_PPPOE_SESSION);
 
 	/* PPPoE and PPP*/
 	d->pppoe_ppp.ver_type_code = rte_htons(0x1100);
@@ -1208,12 +1209,12 @@ nat_cfg_check(struct rte_table_action_nat_config *nat)
 struct nat_ipv4_data {
 	uint32_t addr;
 	uint16_t port;
-} __attribute__((__packed__));
+} __rte_packed;
 
 struct nat_ipv6_data {
 	uint8_t addr[16];
 	uint16_t port;
-} __attribute__((__packed__));
+} __rte_packed;
 
 static size_t
 nat_data_size(struct rte_table_action_nat_config *nat __rte_unused,
@@ -1504,7 +1505,7 @@ ttl_cfg_check(struct rte_table_action_ttl_config *ttl)
 
 struct ttl_data {
 	uint32_t n_packets;
-} __attribute__((__packed__));
+} __rte_packed;
 
 #define TTL_INIT(data, decrement)                         \
 	((data)->n_packets = (decrement) ? 1 : 0)
@@ -1588,7 +1589,7 @@ stats_cfg_check(struct rte_table_action_stats_config *stats)
 struct stats_data {
 	uint64_t n_packets;
 	uint64_t n_bytes;
-} __attribute__((__packed__));
+} __rte_packed;
 
 static int
 stats_apply(struct stats_data *data,
@@ -1613,7 +1614,7 @@ pkt_work_stats(struct stats_data *data,
  */
 struct time_data {
 	uint64_t time;
-} __attribute__((__packed__));
+} __rte_packed;
 
 static int
 time_apply(struct time_data *data,
@@ -1726,7 +1727,7 @@ struct sym_crypto_data {
 	/** Private data size to store cipher iv / aad. */
 	uint8_t iv_aad_data[32];
 
-} __attribute__((__packed__));
+} __rte_packed;
 
 static int
 sym_crypto_cfg_check(struct rte_table_action_sym_crypto_config *cfg)
@@ -2069,7 +2070,7 @@ pkt_work_sym_crypto(struct rte_mbuf *mbuf, struct sym_crypto_data *data,
  */
 struct tag_data {
 	uint32_t tag;
-} __attribute__((__packed__));
+} __rte_packed;
 
 static int
 tag_apply(struct tag_data *data,
@@ -2113,7 +2114,7 @@ pkt4_work_tag(struct rte_mbuf *mbuf0,
  */
 struct decap_data {
 	uint16_t n;
-} __attribute__((__packed__));
+} __rte_packed;
 
 static int
 decap_apply(struct decap_data *data,

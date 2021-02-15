@@ -4,7 +4,7 @@
 
 #include <rte_ether.h>
 #include <rte_mbuf.h>
-#ifdef __ARM64_NEON__
+#ifdef RTE_ARCH_ARM64
 #include <arm_neon.h>
 #endif
 
@@ -209,7 +209,8 @@ void hinic_get_func_rx_buf_size(struct hinic_nic_dev *nic_dev)
 	nic_dev->hwdev->nic_io->rq_buf_size = buf_size;
 }
 
-int hinic_create_rq(struct hinic_hwdev *hwdev, u16 q_id, u16 rq_depth)
+int hinic_create_rq(struct hinic_hwdev *hwdev, u16 q_id,
+			u16 rq_depth, unsigned int socket_id)
 {
 	int err;
 	struct hinic_nic_io *nic_io = hwdev->nic_io;
@@ -223,17 +224,15 @@ int hinic_create_rq(struct hinic_hwdev *hwdev, u16 q_id, u16 rq_depth)
 	nic_io->rq_depth = rq_depth;
 
 	err = hinic_wq_allocate(hwdev, &nic_io->rq_wq[q_id],
-				HINIC_RQ_WQEBB_SHIFT, nic_io->rq_depth);
+			HINIC_RQ_WQEBB_SHIFT, nic_io->rq_depth, socket_id);
 	if (err) {
 		PMD_DRV_LOG(ERR, "Failed to allocate WQ for RQ");
 		return err;
 	}
 	rq->wq = &nic_io->rq_wq[q_id];
 
-	rq->pi_virt_addr =
-		(volatile u16 *)dma_zalloc_coherent(hwdev, HINIC_PAGE_SIZE,
-						    &rq->pi_dma_addr,
-						    GFP_KERNEL);
+	rq->pi_virt_addr = (volatile u16 *)dma_zalloc_coherent(hwdev,
+			HINIC_PAGE_SIZE, &rq->pi_dma_addr, socket_id);
 	if (!rq->pi_virt_addr) {
 		PMD_DRV_LOG(ERR, "Failed to allocate rq pi virt addr");
 		err = -ENOMEM;
@@ -305,16 +304,13 @@ void hinic_rxq_stats_reset(struct hinic_rxq *rxq)
 	memset(rxq_stats, 0, sizeof(*rxq_stats));
 }
 
-static int hinic_rx_alloc_cqe(struct hinic_rxq *rxq)
+static int hinic_rx_alloc_cqe(struct hinic_rxq *rxq, unsigned int socket_id)
 {
 	size_t cqe_mem_size;
 
-	/* allocate continuous cqe memory for saving number of memory zone */
 	cqe_mem_size = sizeof(struct hinic_rq_cqe) * rxq->q_depth;
-	rxq->cqe_start_vaddr =
-		dma_zalloc_coherent(rxq->nic_dev->hwdev,
-				    cqe_mem_size, &rxq->cqe_start_paddr,
-				    GFP_KERNEL);
+	rxq->cqe_start_vaddr = dma_zalloc_coherent(rxq->nic_dev->hwdev,
+				cqe_mem_size, &rxq->cqe_start_paddr, socket_id);
 	if (!rxq->cqe_start_vaddr) {
 		PMD_DRV_LOG(ERR, "Allocate cqe dma memory failed");
 		return -ENOMEM;
@@ -370,11 +366,12 @@ int hinic_setup_rx_resources(struct hinic_rxq *rxq)
 	int err, pkts;
 
 	rx_info_sz = rxq->q_depth * sizeof(*rxq->rx_info);
-	rxq->rx_info = kzalloc_aligned(rx_info_sz, GFP_KERNEL);
+	rxq->rx_info = rte_zmalloc_socket("rx_info", rx_info_sz,
+				RTE_CACHE_LINE_SIZE, rxq->socket_id);
 	if (!rxq->rx_info)
 		return -ENOMEM;
 
-	err = hinic_rx_alloc_cqe(rxq);
+	err = hinic_rx_alloc_cqe(rxq, rxq->socket_id);
 	if (err) {
 		PMD_DRV_LOG(ERR, "Allocate rx cqe failed");
 		goto rx_cqe_err;
@@ -393,7 +390,7 @@ rx_fill_err:
 	hinic_rx_free_cqe(rxq);
 
 rx_cqe_err:
-	kfree(rxq->rx_info);
+	rte_free(rxq->rx_info);
 	rxq->rx_info = NULL;
 
 	return err;
@@ -405,7 +402,7 @@ void hinic_free_rx_resources(struct hinic_rxq *rxq)
 		return;
 
 	hinic_rx_free_cqe(rxq);
-	kfree(rxq->rx_info);
+	rte_free(rxq->rx_info);
 	rxq->rx_info = NULL;
 }
 
@@ -416,12 +413,13 @@ void hinic_free_all_rx_resources(struct rte_eth_dev *eth_dev)
 				HINIC_ETH_DEV_TO_PRIVATE_NIC_DEV(eth_dev);
 
 	for (q_id = 0; q_id < nic_dev->num_rq; q_id++) {
-		eth_dev->data->rx_queues[q_id] = NULL;
+		if (eth_dev->data->rx_queues != NULL)
+			eth_dev->data->rx_queues[q_id] = NULL;
 
 		if (nic_dev->rxqs[q_id] == NULL)
 			continue;
 
-		hinic_free_all_rx_skbs(nic_dev->rxqs[q_id]);
+		hinic_free_all_rx_mbufs(nic_dev->rxqs[q_id]);
 		hinic_free_rx_resources(nic_dev->rxqs[q_id]);
 		kfree(nic_dev->rxqs[q_id]);
 		nic_dev->rxqs[q_id] = NULL;
@@ -435,11 +433,11 @@ void hinic_free_all_rx_mbuf(struct rte_eth_dev *eth_dev)
 	u16 q_id;
 
 	for (q_id = 0; q_id < nic_dev->num_rq; q_id++)
-		hinic_free_all_rx_skbs(nic_dev->rxqs[q_id]);
+		hinic_free_all_rx_mbufs(nic_dev->rxqs[q_id]);
 }
 
 static void hinic_recv_jumbo_pkt(struct hinic_rxq *rxq,
-				 struct rte_mbuf *head_skb,
+				 struct rte_mbuf *head_mbuf,
 				 u32 remain_pkt_len)
 {
 	struct hinic_nic_dev *nic_dev = rxq->nic_dev;
@@ -462,11 +460,11 @@ static void hinic_recv_jumbo_pkt(struct hinic_rxq *rxq,
 		cur_mbuf->data_len = (u16)pkt_len;
 		cur_mbuf->next = NULL;
 
-		head_skb->pkt_len += cur_mbuf->data_len;
-		head_skb->nb_segs++;
+		head_mbuf->pkt_len += cur_mbuf->data_len;
+		head_mbuf->nb_segs++;
 
 		if (!rxm)
-			head_skb->next = cur_mbuf;
+			head_mbuf->next = cur_mbuf;
 		else
 			rxm->next = cur_mbuf;
 
@@ -534,7 +532,7 @@ static void hinic_fillout_indir_tbl(struct hinic_nic_dev *nic_dev, u32 *indir)
 }
 
 static int hinic_rss_init(struct hinic_nic_dev *nic_dev,
-			  __attribute__((unused)) u8 *rq2iq_map,
+			  __rte_unused u8 *rq2iq_map,
 			  struct rte_eth_rss_conf *rss_conf)
 {
 	u32 indir_tbl[HINIC_RSS_INDIR_SIZE] = {0};
@@ -658,8 +656,11 @@ int hinic_rx_configure(struct rte_eth_dev *dev)
 	struct hinic_nic_dev *nic_dev = HINIC_ETH_DEV_TO_PRIVATE_NIC_DEV(dev);
 	struct rte_eth_rss_conf rss_conf =
 		dev->data->dev_conf.rx_adv_conf.rss_conf;
-	u32 csum_en = 0;
 	int err;
+	bool lro_en;
+	int max_lro_size;
+	int lro_wqe_num;
+	int buf_size;
 
 	if (nic_dev->flags & ETH_MQ_RX_RSS_FLAG) {
 		if (rss_conf.rss_hf == 0) {
@@ -678,19 +679,47 @@ int hinic_rx_configure(struct rte_eth_dev *dev)
 
 	/* Enable both L3/L4 rx checksum offload */
 	if (dev->data->dev_conf.rxmode.offloads & DEV_RX_OFFLOAD_CHECKSUM)
-		csum_en = HINIC_RX_CSUM_OFFLOAD_EN;
+		nic_dev->rx_csum_en = HINIC_RX_CSUM_OFFLOAD_EN;
 
-	err = hinic_set_rx_csum_offload(nic_dev->hwdev, csum_en);
+	err = hinic_set_rx_csum_offload(nic_dev->hwdev,
+					HINIC_RX_CSUM_OFFLOAD_EN);
 	if (err)
 		goto rx_csum_ofl_err;
 
+	/* config lro */
+	lro_en = dev->data->dev_conf.rxmode.offloads & DEV_RX_OFFLOAD_TCP_LRO ?
+			true : false;
+	max_lro_size = dev->data->dev_conf.rxmode.max_lro_pkt_size;
+	buf_size = nic_dev->hwdev->nic_io->rq_buf_size;
+	lro_wqe_num = max_lro_size / buf_size ? (max_lro_size / buf_size) : 1;
+
+	err = hinic_set_rx_lro(nic_dev->hwdev, lro_en, lro_en, lro_wqe_num);
+	if (err) {
+		PMD_DRV_LOG(ERR, "%s %s lro failed, err: %d, max_lro_size: %d",
+				dev->data->name, lro_en ? "Enable" : "Disable",
+				err, max_lro_size);
+		goto set_rx_lro_err;
+	}
+
 	return 0;
 
+set_rx_lro_err:
 rx_csum_ofl_err:
 rss_config_err:
+
 	hinic_destroy_num_qps(nic_dev);
 
 	return HINIC_ERROR;
+}
+
+static void hinic_rx_remove_lro(struct hinic_nic_dev *nic_dev)
+{
+	int err;
+
+	err = hinic_set_rx_lro(nic_dev->hwdev, false, false, 0);
+	if (err)
+		PMD_DRV_LOG(ERR, "%s disable LRO failed",
+			    nic_dev->proc_dev_name);
 }
 
 void hinic_rx_remove_configure(struct rte_eth_dev *dev)
@@ -701,9 +730,11 @@ void hinic_rx_remove_configure(struct rte_eth_dev *dev)
 		hinic_rss_deinit(nic_dev);
 		hinic_destroy_num_qps(nic_dev);
 	}
+
+	hinic_rx_remove_lro(nic_dev);
 }
 
-void hinic_free_all_rx_skbs(struct hinic_rxq *rxq)
+void hinic_free_all_rx_mbufs(struct hinic_rxq *rxq)
 {
 	struct hinic_nic_dev *nic_dev = rxq->nic_dev;
 	struct hinic_rx_info *rx_info;
@@ -731,7 +762,7 @@ void hinic_free_all_rx_skbs(struct hinic_rxq *rxq)
 static inline void hinic_rq_cqe_be_to_cpu32(void *dst_le32,
 					    volatile void *src_be32)
 {
-#if defined(__X86_64_SSE__)
+#if defined(RTE_ARCH_X86_64)
 	volatile __m128i *wqe_be = (volatile __m128i *)src_be32;
 	__m128i *wqe_le = (__m128i *)dst_le32;
 	__m128i shuf_mask =  _mm_set_epi8(12, 13, 14, 15, 8, 9, 10,
@@ -739,7 +770,7 @@ static inline void hinic_rq_cqe_be_to_cpu32(void *dst_le32,
 
 	/* l2nic just use first 128 bits */
 	wqe_le[0] = _mm_shuffle_epi8(wqe_be[0], shuf_mask);
-#elif defined(__ARM64_NEON__)
+#elif defined(RTE_ARCH_ARM64)
 	volatile uint8x16_t *wqe_be = (volatile uint8x16_t *)src_be32;
 	uint8x16_t *wqe_le = (uint8x16_t *)dst_le32;
 	const uint8x16_t shuf_mask = {3, 2, 1, 0, 7, 6, 5, 4, 11, 10,
@@ -781,6 +812,10 @@ static inline uint64_t hinic_rx_csum(uint32_t status, struct hinic_rxq *rxq)
 {
 	uint32_t checksum_err;
 	uint64_t flags;
+	struct hinic_nic_dev *nic_dev = rxq->nic_dev;
+
+	if (unlikely(!(nic_dev->rx_csum_en & HINIC_RX_CSUM_OFFLOAD_EN)))
+		return PKT_RX_IP_CKSUM_UNKNOWN;
 
 	/* most case checksum is ok */
 	checksum_err = HINIC_GET_RX_CSUM_ERR(status);
@@ -850,10 +885,11 @@ static inline u32 hinic_rx_alloc_mbuf_bulk(struct hinic_rxq *rxq,
 static struct rte_mbuf *hinic_rx_alloc_mbuf(struct hinic_rxq *rxq,
 					dma_addr_t *dma_addr)
 {
-	struct rte_mbuf *mbuf;
+	struct rte_mbuf *mbuf = NULL;
+	int rc;
 
-	mbuf = rte_mbuf_raw_alloc(rxq->mb_pool);
-	if (unlikely(!mbuf))
+	rc = rte_pktmbuf_alloc_bulk(rxq->mb_pool, &mbuf, 1);
+	if (unlikely(rc != HINIC_OK))
 		return NULL;
 
 	*dma_addr = rte_mbuf_data_iova_default(mbuf);
@@ -954,7 +990,7 @@ u16 hinic_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts, u16 nb_pkts)
 	volatile struct hinic_rq_cqe *rx_cqe;
 	u16 rx_buf_len, pkts = 0;
 	u16 sw_ci, ci_mask, wqebb_cnt = 0;
-	u32 pkt_len, status, vlan_len;
+	u32 pkt_len, status, vlan_len, lro_num;
 	u64 rx_bytes = 0;
 	struct hinic_rq_cqe cqe;
 	u32 offload_type, rss_hash;
@@ -968,12 +1004,9 @@ u16 hinic_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts, u16 nb_pkts)
 	while (pkts < nb_pkts) {
 		 /* 2. current ci is done */
 		rx_cqe = &rxq->rx_cqe[sw_ci];
-		status = rx_cqe->status;
+		status = __atomic_load_n(&rx_cqe->status, __ATOMIC_ACQUIRE);
 		if (!HINIC_GET_RX_DONE_BE(status))
 			break;
-
-		/* read other cqe member after status */
-		rte_rmb();
 
 		/* convert cqe and get packet length */
 		hinic_rq_cqe_be_to_cpu32(&cqe, (volatile void *)rx_cqe);
@@ -999,8 +1032,8 @@ u16 hinic_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts, u16 nb_pkts)
 			rxm->data_len = rx_buf_len;
 			rxm->pkt_len = rx_buf_len;
 
-			/* if jumbo use multi-wqebb update ci,
-			 * recv_jumbo_pkt will also update ci
+			/* if receive jumbo, updating ci will be done by
+			 * hinic_recv_jumbo_pkt function.
 			 */
 			HINIC_UPDATE_RQ_LOCAL_CI(rxq, wqebb_cnt + 1);
 			wqebb_cnt = 0;
@@ -1024,6 +1057,13 @@ u16 hinic_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts, u16 nb_pkts)
 		rss_hash = cqe.rss_hash;
 		rxm->ol_flags |= hinic_rx_rss_hash(offload_type, rss_hash,
 						   &rxm->hash.rss);
+
+		/* lro offload */
+		lro_num = HINIC_GET_RX_NUM_LRO(cqe.status);
+		if (unlikely(lro_num != 0)) {
+			rxm->ol_flags |= PKT_RX_LRO;
+			rxm->tso_segsz = pkt_len / lro_num;
+		}
 
 		/* 6. clear done bit */
 		rx_cqe->status = 0;

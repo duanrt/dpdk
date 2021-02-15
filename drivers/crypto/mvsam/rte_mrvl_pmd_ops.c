@@ -10,7 +10,7 @@
 #include <rte_malloc.h>
 #include <rte_cryptodev_pmd.h>
 
-#include "rte_mrvl_pmd_private.h"
+#include "mrvl_pmd_private.h"
 
 /**
  * Capabilities list to be used in reporting to DPDK.
@@ -702,17 +702,6 @@ mrvl_crypto_pmd_qp_setup(struct rte_cryptodev *dev, uint16_t qp_id,
 	return -1;
 }
 
-/** Return the number of allocated queue pairs (PMD ops callback).
- *
- * @param dev Pointer to the device structure.
- * @returns Number of allocated queue pairs.
- */
-static uint32_t
-mrvl_crypto_pmd_qp_count(struct rte_cryptodev *dev)
-{
-	return dev->data->nb_queue_pairs;
-}
-
 /** Returns the size of the session structure (PMD ops callback).
  *
  * @param dev Pointer to the device structure [Unused].
@@ -827,7 +816,6 @@ static struct rte_cryptodev_ops mrvl_crypto_pmd_ops = {
 
 		.queue_pair_setup	= mrvl_crypto_pmd_qp_setup,
 		.queue_pair_release	= mrvl_crypto_pmd_qp_release,
-		.queue_pair_count	= mrvl_crypto_pmd_qp_count,
 
 		.sym_session_get_size	= mrvl_crypto_pmd_sym_session_get_size,
 		.sym_session_configure	= mrvl_crypto_pmd_sym_session_configure,

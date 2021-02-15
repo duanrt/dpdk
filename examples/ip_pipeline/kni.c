@@ -24,7 +24,7 @@ kni_init(void)
 {
 	TAILQ_INIT(&kni_list);
 
-#ifdef RTE_LIBRTE_KNI
+#ifdef RTE_LIB_KNI
 	rte_kni_init(KNI_MAX);
 #endif
 
@@ -46,7 +46,7 @@ kni_find(const char *name)
 	return NULL;
 }
 
-#ifndef RTE_LIBRTE_KNI
+#ifndef RTE_LIB_KNI
 
 struct kni *
 kni_create(const char *name __rte_unused,
@@ -109,6 +109,7 @@ kni_create(const char *name, struct kni_params *params)
 	struct rte_kni *k;
 	const struct rte_pci_device *pci_dev;
 	const struct rte_bus *bus = NULL;
+	int ret;
 
 	/* Check input params */
 	if ((name == NULL) ||
@@ -123,7 +124,9 @@ kni_create(const char *name, struct kni_params *params)
 		return NULL;
 
 	/* Resource create */
-	rte_eth_dev_info_get(link->port_id, &dev_info);
+	ret = rte_eth_dev_info_get(link->port_id, &dev_info);
+	if (ret != 0)
+		return NULL;
 
 	memset(&kni_conf, 0, sizeof(kni_conf));
 	strlcpy(kni_conf.name, name, RTE_KNI_NAMESIZE);

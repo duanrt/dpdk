@@ -11,7 +11,7 @@
 
 #include <sys/queue.h>
 
-#include <rte_ethdev_driver.h>
+#include <ethdev_driver.h>
 #include <rte_ether.h>
 #include <rte_interrupts.h>
 
@@ -36,8 +36,8 @@ extern int memif_logtype;
 		"%s(): " fmt "\n", __func__, ##args)
 
 enum memif_role_t {
-	MEMIF_ROLE_MASTER,
-	MEMIF_ROLE_SLAVE,
+	MEMIF_ROLE_SERVER,
+	MEMIF_ROLE_CLIENT,
 };
 
 struct memif_region {
@@ -63,11 +63,14 @@ struct memif_queue {
 	uint16_t last_head;			/**< last ring head */
 	uint16_t last_tail;			/**< last ring tail */
 
+	struct rte_mbuf **buffers;
+	/**< Stored mbufs. Used in zero-copy tx. Client stores transmitted
+	 * mbufs to free them once server has received them.
+	 */
+
 	/* rx/tx info */
 	uint64_t n_pkts;			/**< number of rx/tx packets */
 	uint64_t n_bytes;			/**< number of rx/tx bytes */
-
-	memif_ring_t *ring;			/**< pointer to ring */
 
 	struct rte_intr_handle intr_handle;	/**< interrupt handle */
 
@@ -78,19 +81,22 @@ struct pmd_internals {
 	memif_interface_id_t id;		/**< unique id */
 	enum memif_role_t role;			/**< device role */
 	uint32_t flags;				/**< device status flags */
-#define ETH_MEMIF_FLAG_CONNECTING	(1 << 0)
+#define ETH_MEMIF_FLAG_CONNECTING		(1 << 0)
 /**< device is connecting */
-#define ETH_MEMIF_FLAG_CONNECTED	(1 << 1)
+#define ETH_MEMIF_FLAG_CONNECTED		(1 << 1)
 /**< device is connected */
-#define ETH_MEMIF_FLAG_ZERO_COPY	(1 << 2)
+#define ETH_MEMIF_FLAG_ZERO_COPY		(1 << 2)
 /**< device is zero-copy enabled */
-#define ETH_MEMIF_FLAG_DISABLED		(1 << 3)
+#define ETH_MEMIF_FLAG_DISABLED			(1 << 3)
 /**< device has not been configured and can not accept connection requests */
+#define ETH_MEMIF_FLAG_SOCKET_ABSTRACT	(1 << 4)
+/**< use abstract socket address */
 
 	char *socket_filename;			/**< pointer to socket filename */
 	char secret[ETH_MEMIF_SECRET_SIZE]; /**< secret (optional security parameter) */
 
 	struct memif_control_channel *cc;	/**< control channel */
+	rte_spinlock_t cc_lock;			/**< control channel lock */
 
 	/* remote info */
 	char remote_name[RTE_DEV_NAME_MAX_LEN];		/**< remote app name */
@@ -98,15 +104,15 @@ struct pmd_internals {
 
 	struct {
 		memif_log2_ring_size_t log2_ring_size; /**< log2 of ring size */
-		uint8_t num_s2m_rings;		/**< number of slave to master rings */
-		uint8_t num_m2s_rings;		/**< number of master to slave rings */
+		uint8_t num_c2s_rings;		/**< number of client to server rings */
+		uint8_t num_s2c_rings;		/**< number of server to client rings */
 		uint16_t pkt_buffer_size;	/**< buffer size */
 	} cfg;					/**< Configured parameters (max values) */
 
 	struct {
 		memif_log2_ring_size_t log2_ring_size; /**< log2 of ring size */
-		uint8_t num_s2m_rings;		/**< number of slave to master rings */
-		uint8_t num_m2s_rings;		/**< number of master to slave rings */
+		uint8_t num_c2s_rings;		/**< number of client to server rings */
+		uint8_t num_s2c_rings;		/**< number of server to client rings */
 		uint16_t pkt_buffer_size;	/**< buffer size */
 	} run;
 	/**< Parameters used in active connection */
@@ -115,8 +121,6 @@ struct pmd_internals {
 	/**< local disconnect reason */
 	char remote_disc_string[ETH_MEMIF_DISC_STRING_SIZE];
 	/**< remote disconnect reason */
-
-	struct rte_vdev_device *vdev;		/**< vdev handle */
 };
 
 struct pmd_process_private {
@@ -131,11 +135,11 @@ struct pmd_process_private {
  * @param proc_private
  *   device process private data
  */
-void memif_free_regions(struct pmd_process_private *proc_private);
+void memif_free_regions(struct rte_eth_dev *dev);
 
 /**
  * Finalize connection establishment process. Map shared memory file
- * (master role), initialize ring queue, set link status up.
+ * (server role), initialize ring queue, set link status up.
  *
  * @param dev
  *   memif device
@@ -147,7 +151,7 @@ int memif_connect(struct rte_eth_dev *dev);
 
 /**
  * Create shared memory file and initialize ring queue.
- * Only called by slave when establishing connection
+ * Only called by client when establishing connection
  *
  * @param dev
  *   memif device

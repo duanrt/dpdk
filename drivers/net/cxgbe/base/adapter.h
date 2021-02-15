@@ -19,7 +19,6 @@
 #include "t4_regs_values.h"
 
 enum {
-	MAX_ETH_QSETS = 64,           /* # of Ethernet Tx/Rx queue sets */
 	MAX_CTRL_QUEUES = NCHAN,      /* # of control Tx queues */
 };
 
@@ -40,28 +39,26 @@ struct port_info {
 	short int xact_addr_filt;       /* index of exact MAC address filter */
 
 	u16    viid;                    /* associated virtual interface id */
-	s8     mdio_addr;               /* address of the PHY */
-	u8     port_type;               /* firmware port type */
-	u8     mod_type;                /* firmware module type */
 	u8     port_id;                 /* physical port ID */
 	u8     pidx;			/* port index for this PF */
 	u8     tx_chan;                 /* associated channel */
 
-	u8     n_rx_qsets;              /* # of rx qsets */
-	u8     n_tx_qsets;              /* # of tx qsets */
-	u8     first_qset;              /* index of first qset */
+	u16    n_rx_qsets;              /* # of rx qsets */
+	u16    n_tx_qsets;              /* # of tx qsets */
+	u16    first_rxqset;            /* index of first rxqset */
+	u16    first_txqset;            /* index of first txqset */
 
 	u16    *rss;                    /* rss table */
 	u8     rss_mode;                /* rss mode */
 	u16    rss_size;                /* size of VI's RSS table slice */
 	u64    rss_hf;			/* RSS Hash Function */
-};
 
-/* Enable or disable autonegotiation.  If this is set to enable,
- * the forced link modes above are completely ignored.
- */
-#define AUTONEG_DISABLE         0x00
-#define AUTONEG_ENABLE          0x01
+	/* viid fields either returned by fw
+	 * or decoded by parsing viid by driver.
+	 */
+	u8 vin;
+	u8 vivld;
+};
 
 enum {                                 /* adapter flags */
 	FULL_INIT_DONE     = (1 << 0),
@@ -156,6 +153,7 @@ struct sge_eth_rx_stats {	/* Ethernet rx queue statistics */
 };
 
 struct sge_eth_rxq {                /* a SW Ethernet Rx queue */
+	unsigned int flags;         /* flags for state of the queue */
 	struct sge_rspq rspq;
 	struct sge_fl fl;
 	struct sge_eth_rx_stats stats;
@@ -193,8 +191,12 @@ struct tx_sw_desc {                /* SW state per Tx descriptor */
 	struct tx_eth_coal_desc coalesce;
 };
 
-enum {
+enum cxgbe_txq_state {
 	EQ_STOPPED = (1 << 0),
+};
+
+enum cxgbe_rxq_state {
+	IQ_STOPPED = (1 << 0),
 };
 
 struct eth_coalesce {
@@ -268,8 +270,8 @@ struct sge_ctrl_txq {                /* State for an SGE control Tx queue */
 } __rte_cache_aligned;
 
 struct sge {
-	struct sge_eth_txq ethtxq[MAX_ETH_QSETS];
-	struct sge_eth_rxq ethrxq[MAX_ETH_QSETS];
+	struct sge_eth_txq *ethtxq;
+	struct sge_eth_rxq *ethrxq;
 	struct sge_rspq fw_evtq __rte_cache_aligned;
 	struct sge_ctrl_txq ctrlq[MAX_CTRL_QUEUES];
 
@@ -299,6 +301,14 @@ struct mbox_entry {
 
 TAILQ_HEAD(mbox_list, mbox_entry);
 
+struct adapter_devargs {
+	bool keep_ovlan;
+	bool force_link_up;
+	bool tx_mode_latency;
+	u32 filtermode;
+	u32 filtermask;
+};
+
 struct adapter {
 	struct rte_pci_device *pdev;       /* associated rte pci device */
 	struct rte_eth_dev *eth_dev;       /* first port's rte eth device */
@@ -322,15 +332,20 @@ struct adapter {
 	int use_unpacked_mode; /* unpacked rx mode state */
 	rte_spinlock_t win0_lock;
 
+	rte_spinlock_t flow_lock; /* Serialize access for rte_flow ops */
+
 	unsigned int clipt_start; /* CLIP table start */
 	unsigned int clipt_end;   /* CLIP table end */
 	unsigned int l2t_start;   /* Layer 2 table start */
 	unsigned int l2t_end;     /* Layer 2 table end */
 	struct clip_tbl *clipt;   /* CLIP table */
 	struct l2t_data *l2t;     /* Layer 2 table */
+	struct smt_data *smt;     /* Source mac table */
 	struct mpstcam_table *mpstcam;
 
 	struct tid_info tids;     /* Info used to access TID related tables */
+
+	struct adapter_devargs devargs;
 };
 
 /**
@@ -450,11 +465,7 @@ static inline uint64_t cxgbe_write_addr64(volatile void *addr, uint64_t val)
  */
 static inline u32 t4_read_reg(struct adapter *adapter, u32 reg_addr)
 {
-	u32 val = CXGBE_READ_REG(adapter, reg_addr);
-
-	CXGBE_DEBUG_REG(adapter, "read register 0x%x value 0x%x\n", reg_addr,
-			val);
-	return val;
+	return CXGBE_READ_REG(adapter, reg_addr);
 }
 
 /**
@@ -467,8 +478,6 @@ static inline u32 t4_read_reg(struct adapter *adapter, u32 reg_addr)
  */
 static inline void t4_write_reg(struct adapter *adapter, u32 reg_addr, u32 val)
 {
-	CXGBE_DEBUG_REG(adapter, "setting register 0x%x to 0x%x\n", reg_addr,
-			val);
 	CXGBE_WRITE_REG(adapter, reg_addr, val);
 }
 
@@ -483,8 +492,6 @@ static inline void t4_write_reg(struct adapter *adapter, u32 reg_addr, u32 val)
 static inline void t4_write_reg_relaxed(struct adapter *adapter, u32 reg_addr,
 					u32 val)
 {
-	CXGBE_DEBUG_REG(adapter, "setting register 0x%x to 0x%x\n", reg_addr,
-			val);
 	CXGBE_WRITE_REG_RELAXED(adapter, reg_addr, val);
 }
 
@@ -497,11 +504,7 @@ static inline void t4_write_reg_relaxed(struct adapter *adapter, u32 reg_addr,
  */
 static inline u64 t4_read_reg64(struct adapter *adapter, u32 reg_addr)
 {
-	u64 val = CXGBE_READ_REG64(adapter, reg_addr);
-
-	CXGBE_DEBUG_REG(adapter, "64-bit read register %#x value %#llx\n",
-			reg_addr, (unsigned long long)val);
-	return val;
+	return CXGBE_READ_REG64(adapter, reg_addr);
 }
 
 /**
@@ -515,9 +518,6 @@ static inline u64 t4_read_reg64(struct adapter *adapter, u32 reg_addr)
 static inline void t4_write_reg64(struct adapter *adapter, u32 reg_addr,
 				  u64 val)
 {
-	CXGBE_DEBUG_REG(adapter, "setting register %#x to %#llx\n", reg_addr,
-			(unsigned long long)val);
-
 	CXGBE_WRITE_REG64(adapter, reg_addr, val);
 }
 
@@ -792,7 +792,6 @@ void t4_free_mem(void *addr);
 #define t4_os_free(_ptr)       t4_free_mem((_ptr))
 
 void t4_os_portmod_changed(const struct adapter *adap, int port_id);
-void t4_os_link_changed(struct adapter *adap, int port_id, int link_stat);
 
 void reclaim_completed_tx(struct sge_txq *q);
 void t4_free_sge_resources(struct adapter *adap);
@@ -817,10 +816,11 @@ int t4_sge_alloc_rxq(struct adapter *adap, struct sge_rspq *rspq, bool fwevtq,
 int t4_sge_eth_txq_start(struct sge_eth_txq *txq);
 int t4_sge_eth_txq_stop(struct sge_eth_txq *txq);
 void t4_sge_eth_txq_release(struct adapter *adap, struct sge_eth_txq *txq);
-int t4_sge_eth_rxq_start(struct adapter *adap, struct sge_rspq *rq);
-int t4_sge_eth_rxq_stop(struct adapter *adap, struct sge_rspq *rq);
+int t4_sge_eth_rxq_start(struct adapter *adap, struct sge_eth_rxq *rxq);
+int t4_sge_eth_rxq_stop(struct adapter *adap, struct sge_eth_rxq *rxq);
 void t4_sge_eth_rxq_release(struct adapter *adap, struct sge_eth_rxq *rxq);
 void t4_sge_eth_clear_queues(struct port_info *pi);
+void t4_sge_eth_release_queues(struct port_info *pi);
 int cxgb4_set_rspq_intr_params(struct sge_rspq *q, unsigned int us,
 			       unsigned int cnt);
 int cxgbe_poll(struct sge_rspq *q, struct rte_mbuf **rx_pkts,

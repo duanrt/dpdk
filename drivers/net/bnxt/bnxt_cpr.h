@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2014-2018 Broadcom
+ * Copyright(c) 2014-2021 Broadcom
  * All rights reserved.
  */
 
@@ -45,7 +45,7 @@ struct bnxt_db_info;
 } while (0)
 #define B_CP_DB_REARM(cpr, raw_cons)					\
 	rte_write32((DB_CP_REARM_FLAGS |				\
-		    RING_CMP(((cpr)->cp_ring_struct), raw_cons)),	\
+		    DB_RING_IDX(&((cpr)->cp_db), raw_cons)),		\
 		    ((cpr)->cp_db.doorbell))
 
 #define B_CP_DB_ARM(cpr)	rte_write32((DB_KEY_CP),		\
@@ -64,8 +64,8 @@ struct bnxt_db_info;
 				(cons));				\
 } while (0)
 #define B_CP_DIS_DB(cpr, raw_cons)					\
-	rte_write32((DB_CP_FLAGS |					\
-		    RING_CMP(((cpr)->cp_ring_struct), raw_cons)),	\
+	rte_write32_relaxed((DB_CP_FLAGS |				\
+		    DB_RING_IDX(&((cpr)->cp_db), raw_cons)),		\
 		    ((cpr)->cp_db.doorbell))
 
 #define B_CP_DB(cpr, raw_cons, ring_mask)				\
@@ -80,7 +80,15 @@ struct bnxt_db_info {
 		uint32_t        db_key32;
 	};
 	bool                    db_64;
+	uint32_t		db_ring_mask;
+	uint32_t		db_epoch_mask;
+	uint32_t		db_epoch_shift;
 };
+
+#define DB_EPOCH(db, idx)	(((idx) & (db)->db_epoch_mask) <<	\
+				 ((db)->db_epoch_shift))
+#define DB_RING_IDX(db, idx)	(((idx) & (db)->db_ring_mask) |		\
+				 DB_EPOCH(db, idx))
 
 struct bnxt_ring;
 struct bnxt_cp_ring_info {
@@ -95,7 +103,6 @@ struct bnxt_cp_ring_info {
 	uint32_t		hw_stats_ctx_id;
 
 	struct bnxt_ring	*cp_ring_struct;
-	uint16_t		cp_cons;
 	bool			valid;
 };
 
@@ -106,5 +113,25 @@ struct bnxt;
 void bnxt_handle_async_event(struct bnxt *bp, struct cmpl_base *cmp);
 void bnxt_handle_fwd_req(struct bnxt *bp, struct cmpl_base *cmp);
 int bnxt_event_hwrm_resp_handler(struct bnxt *bp, struct cmpl_base *cmp);
+void bnxt_dev_reset_and_resume(void *arg);
+void bnxt_wait_for_device_shutdown(struct bnxt *bp);
 
+#define EVENT_DATA1_REASON_CODE_FW_EXCEPTION_FATAL     \
+	HWRM_ASYNC_EVENT_CMPL_RESET_NOTIFY_EVENT_DATA1_REASON_CODE_FW_EXCEPTION_FATAL
+#define EVENT_DATA1_REASON_CODE_MASK                   \
+	HWRM_ASYNC_EVENT_CMPL_RESET_NOTIFY_EVENT_DATA1_REASON_CODE_MASK
+
+#define EVENT_DATA1_FLAGS_MASK                         \
+	HWRM_ASYNC_EVENT_CMPL_ERROR_RECOVERY_EVENT_DATA1_FLAGS_MASK
+
+#define EVENT_DATA1_FLAGS_MASTER_FUNC                  \
+	HWRM_ASYNC_EVENT_CMPL_ERROR_RECOVERY_EVENT_DATA1_FLAGS_MASTER_FUNC
+
+#define EVENT_DATA1_FLAGS_RECOVERY_ENABLED             \
+	HWRM_ASYNC_EVENT_CMPL_ERROR_RECOVERY_EVENT_DATA1_FLAGS_RECOVERY_ENABLED
+
+bool bnxt_is_recovery_enabled(struct bnxt *bp);
+bool bnxt_is_master_func(struct bnxt *bp);
+
+void bnxt_stop_rxtx(struct bnxt *bp);
 #endif

@@ -181,7 +181,6 @@ static int spi_txrx(struct altera_spi_device *dev)
 	u32 rxd;
 	unsigned int tx_data;
 	u32 status;
-	int retry = 0;
 	int ret;
 
 	while (count < dev->len) {
@@ -194,10 +193,6 @@ static int spi_txrx(struct altera_spi_device *dev)
 				return -EIO;
 			if (status & ALTERA_SPI_STATUS_RRDY_MSK)
 				break;
-			if (retry++ > SPI_MAX_RETRY) {
-				dev_err(dev, "%s, read timeout\n", __func__);
-				return -EBUSY;
-			}
 		}
 
 		ret = spi_reg_read(dev, ALTERA_SPI_RXDATA, &rxd);
@@ -290,11 +285,15 @@ void altera_spi_init(struct altera_spi_device *spi_dev)
 			spi_dev->num_chipselect,
 			spi_dev->spi_param.clock_phase);
 
+	if (spi_dev->mutex)
+		pthread_mutex_lock(spi_dev->mutex);
 	/* clear */
 	spi_reg_write(spi_dev, ALTERA_SPI_CONTROL, 0);
 	spi_reg_write(spi_dev, ALTERA_SPI_STATUS, 0);
 	/* flush rxdata */
 	spi_flush_rx(spi_dev);
+	if (spi_dev->mutex)
+		pthread_mutex_unlock(spi_dev->mutex);
 }
 
 void altera_spi_release(struct altera_spi_device *dev)

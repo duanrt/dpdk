@@ -8,6 +8,11 @@
 #define RX_BUF_LEN_16K			16384
 #define RX_BUF_LEN_1_5K			1536
 
+/* vhd type */
+#define HINIC_VHD_TYPE_0B		2
+#define HINIC_VHD_TYPE_10B		1
+#define HINIC_VHD_TYPE_12B		0
+
 #define HINIC_Q_CTXT_MAX		42
 
 /* performance: ci addr RTE_CACHE_SIZE(64B) alignment */
@@ -217,7 +222,7 @@ struct hinic_nic_io {
 	u16			vhd_mode;
 
 	struct hinic_qp		*qps;
-	/* sq ci mem base addr of the function*/
+	/* sq ci mem base addr of the function */
 	void			*ci_vaddr_base;
 	dma_addr_t		ci_dma_base;
 
@@ -228,7 +233,6 @@ struct hinic_nic_io {
 struct hinic_sq_db {
 	u32	db_info;
 };
-
 
 int hinic_init_qp_ctxts(struct hinic_hwdev *hwdev);
 

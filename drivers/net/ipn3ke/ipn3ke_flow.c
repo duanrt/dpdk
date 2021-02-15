@@ -13,11 +13,17 @@
 #include <rte_io.h>
 #include <rte_debug.h>
 #include <rte_ether.h>
-#include <rte_ethdev_driver.h>
+#include <ethdev_driver.h>
 #include <rte_log.h>
 #include <rte_malloc.h>
 #include <rte_eth_ctrl.h>
 #include <rte_tailq.h>
+#include <rte_rawdev.h>
+#include <rte_rawdev_pmd.h>
+#include <rte_bus_ifpga.h>
+#include <ifpga_common.h>
+#include <ifpga_logs.h>
+#include <ifpga_rawdev.h>
 
 #include "ipn3ke_rawdev_api.h"
 #include "ipn3ke_flow.h"
@@ -1372,4 +1378,3 @@ const struct rte_flow_ops ipn3ke_flow_ops = {
 	.destroy = ipn3ke_flow_destroy,
 	.flush = ipn3ke_flow_flush,
 };
-

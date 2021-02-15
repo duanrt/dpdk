@@ -36,12 +36,6 @@ __rte_stack_lf_push_elems(struct rte_stack_lf_list *list,
 			  struct rte_stack_lf_elem *last,
 			  unsigned int num)
 {
-#ifndef RTE_ARCH_X86_64
-	RTE_SET_USED(first);
-	RTE_SET_USED(last);
-	RTE_SET_USED(list);
-	RTE_SET_USED(num);
-#else
 	struct rte_stack_lf_head old_head;
 	int success;
 
@@ -49,12 +43,6 @@ __rte_stack_lf_push_elems(struct rte_stack_lf_list *list,
 
 	do {
 		struct rte_stack_lf_head new_head;
-
-		/* Use an acquire fence to establish a synchronized-with
-		 * relationship between the list->head load and store-release
-		 * operations (as part of the rte_atomic128_cmp_exchange()).
-		 */
-		__atomic_thread_fence(__ATOMIC_ACQUIRE);
 
 		/* Swing the top pointer to the first element in the list and
 		 * make the last element point to the old top.
@@ -79,7 +67,6 @@ __rte_stack_lf_push_elems(struct rte_stack_lf_list *list,
 	 * to the LIFO len update.
 	 */
 	__atomic_add_fetch(&list->len, num, __ATOMIC_RELEASE);
-#endif
 }
 
 static __rte_always_inline struct rte_stack_lf_elem *
@@ -88,20 +75,12 @@ __rte_stack_lf_pop_elems(struct rte_stack_lf_list *list,
 			 void **obj_table,
 			 struct rte_stack_lf_elem **last)
 {
-#ifndef RTE_ARCH_X86_64
-	RTE_SET_USED(obj_table);
-	RTE_SET_USED(last);
-	RTE_SET_USED(list);
-	RTE_SET_USED(num);
-
-	return NULL;
-#else
 	struct rte_stack_lf_head old_head;
 	uint64_t len;
 	int success;
 
 	/* Reserve num elements, if available */
-	len = __atomic_load_n(&list->len, __ATOMIC_ACQUIRE);
+	len = __atomic_load_n(&list->len, __ATOMIC_RELAXED);
 
 	while (1) {
 		/* Does the list contain enough elements? */
@@ -111,8 +90,8 @@ __rte_stack_lf_pop_elems(struct rte_stack_lf_list *list,
 		/* len is updated on failure */
 		if (__atomic_compare_exchange_n(&list->len,
 						&len, len - num,
-						0, __ATOMIC_ACQUIRE,
-						__ATOMIC_ACQUIRE))
+						1, __ATOMIC_ACQUIRE,
+						__ATOMIC_RELAXED))
 			break;
 	}
 
@@ -154,22 +133,37 @@ __rte_stack_lf_pop_elems(struct rte_stack_lf_list *list,
 		/* If NULL was encountered, the list was modified while
 		 * traversing it. Retry.
 		 */
-		if (i != num)
+		if (i != num) {
+			old_head = list->head;
 			continue;
+		}
 
 		new_head.top = tmp;
 		new_head.cnt = old_head.cnt + 1;
 
+		/*
+		 * The CAS should have release semantics to ensure that
+		 * items are read before the head is updated.
+		 * But this function is internal, and items are read
+		 * only when __rte_stack_lf_pop calls this function to
+		 * pop items from used list.
+		 * Then, those items are pushed to the free list.
+		 * Push uses a CAS store-release on head, which makes
+		 * sure that items are read before they are pushed to
+		 * the free list, without need for a CAS release here.
+		 * This CAS could also be used to ensure that the new
+		 * length is visible before the head update, but
+		 * acquire semantics on the length update is enough.
+		 */
 		success = rte_atomic128_cmp_exchange(
 				(rte_int128_t *)&list->head,
 				(rte_int128_t *)&old_head,
 				(rte_int128_t *)&new_head,
-				1, __ATOMIC_RELEASE,
+				0, __ATOMIC_RELAXED,
 				__ATOMIC_RELAXED);
 	} while (success == 0);
 
 	return old_head.top;
-#endif
 }
 
 #endif /* _RTE_STACK_LF_C11_H_ */

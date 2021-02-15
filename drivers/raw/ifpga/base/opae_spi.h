@@ -38,7 +38,7 @@
 #define SPI_WRITE 0x20
 #define WRITE_DATA_MASK GENMASK_ULL(31, 0)
 
-#define SPI_MAX_RETRY 100000
+#define SPI_MAX_RETRY 1000000
 
 #define TYPE_SPI 0
 #define TYPE_NIOS_SPI 1
@@ -77,6 +77,10 @@ struct altera_spi_device {
 	int (*reg_read)(struct altera_spi_device *dev, u32 reg, u32 *val);
 	int (*reg_write)(struct altera_spi_device *dev, u32 reg,
 			u32 value);
+	/* below are data to be shared in multiple process */
+	pthread_mutex_t *mutex;     /* to be passed to spi_transaction_dev */
+	unsigned int *dtb_sz_ptr;   /* to be used in init_max10_device_table */
+	unsigned char *dtb;         /* to be used in init_max10_device_table */
 };
 
 #define HEADER_LEN 8
@@ -102,6 +106,8 @@ struct spi_transaction_dev {
 	struct altera_spi_device *dev;
 	int chipselect;
 	struct spi_tran_buffer *buffer;
+	pthread_mutex_t lock;
+	pthread_mutex_t *mutex;  /* multi-process mutex from adapter */
 };
 
 struct spi_tran_header {
@@ -149,12 +155,20 @@ int spi_reg_read(struct altera_spi_device *dev, u32 reg, u32 *val);
 #define NIOS_SPI_STAT 0x18
 #define NIOS_SPI_VALID BIT_ULL(32)
 #define NIOS_SPI_READ_DATA GENMASK_ULL(31, 0)
-#define NIOS_SPI_INIT_DONE 0x1000
 
-#define NIOS_SPI_INIT_DONE 0x1000
-#define NIOS_SPI_INIT_STS0 0x1020
-#define NIOS_SPI_INIT_STS1 0x1024
-#define PKVL_STATUS_RESET  0
-#define PKVL_10G_MODE      1
-#define PKVL_25G_MODE      2
+#define NIOS_INIT		0x1000
+#define REQ_FEC_MODE		GENMASK(23, 8)
+#define REQ_FEC_MODE_SHIFT      8
+#define FEC_MODE_NO		0x0
+#define FEC_MODE_KR		0x5555
+#define FEC_MODE_RS		0xaaaa
+#define NIOS_INIT_START		BIT(1)
+#define NIOS_INIT_DONE		BIT(0)
+#define NIOS_VERSION		0x1004
+#define NIOS_VERSION_MAJOR_SHIFT 28
+#define NIOS_VERSION_MAJOR	GENMASK(31, 28)
+#define NIOS_VERSION_MINOR	GENMASK(27, 24)
+#define NIOS_VERSION_PATCH	GENMASK(23, 20)
+#define PKVL_A_MODE_STS		0x1020
+#define PKVL_B_MODE_STS		0x1024
 #endif

@@ -2,24 +2,26 @@
  * Copyright(c) 2019 Intel Corporation
  */
 
-#include <rte_config.h>
 #include <rte_eal_memconfig.h>
 #include <rte_version.h>
 
 #include "eal_internal_cfg.h"
 #include "eal_memcfg.h"
+#include "eal_private.h"
 
 void
 eal_mcfg_complete(void)
 {
 	struct rte_config *cfg = rte_eal_get_configuration();
 	struct rte_mem_config *mcfg = cfg->mem_config;
+	struct internal_config *internal_conf =
+		eal_get_internal_configuration();
 
 	/* ALL shared mem_config related INIT DONE */
 	if (cfg->process_type == RTE_PROC_PRIMARY)
 		mcfg->magic = RTE_MAGIC;
 
-	internal_config.init_complete = 1;
+	internal_conf->init_complete = 1;
 }
 
 void
@@ -48,18 +50,22 @@ void
 eal_mcfg_update_internal(void)
 {
 	struct rte_mem_config *mcfg = rte_eal_get_configuration()->mem_config;
+	struct internal_config *internal_conf =
+		eal_get_internal_configuration();
 
-	internal_config.legacy_mem = mcfg->legacy_mem;
-	internal_config.single_file_segments = mcfg->single_file_segments;
+	internal_conf->legacy_mem = mcfg->legacy_mem;
+	internal_conf->single_file_segments = mcfg->single_file_segments;
 }
 
 void
 eal_mcfg_update_from_internal(void)
 {
 	struct rte_mem_config *mcfg = rte_eal_get_configuration()->mem_config;
+	const struct internal_config *internal_conf =
+		eal_get_internal_configuration();
 
-	mcfg->legacy_mem = internal_config.legacy_mem;
-	mcfg->single_file_segments = internal_config.single_file_segments;
+	mcfg->legacy_mem = internal_conf->legacy_mem;
+	mcfg->single_file_segments = internal_conf->single_file_segments;
 	/* record current DPDK version */
 	mcfg->version = RTE_VERSION;
 }
@@ -160,4 +166,11 @@ rte_mcfg_timer_unlock(void)
 {
 	struct rte_mem_config *mcfg = rte_eal_get_configuration()->mem_config;
 	rte_spinlock_unlock(&mcfg->tlock);
+}
+
+bool
+rte_mcfg_get_single_file_segments(void)
+{
+	struct rte_mem_config *mcfg = rte_eal_get_configuration()->mem_config;
+	return (bool)mcfg->single_file_segments;
 }

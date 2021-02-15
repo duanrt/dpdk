@@ -18,8 +18,6 @@
 #define MAX_BURST 32
 #define STACK_SIZE (RTE_MAX_LCORE * MAX_BURST)
 
-#define ARRAY_SIZE(x) (sizeof(x) / sizeof((x)[0]))
-
 /*
  * Push/pop bulk sizes, marked volatile so they aren't treated as compile-time
  * constants.
@@ -176,13 +174,13 @@ run_on_core_pair(struct lcore_pair *cores, struct rte_stack *s,
 	struct thread_args args[2];
 	unsigned int i;
 
-	for (i = 0; i < ARRAY_SIZE(bulk_sizes); i++) {
+	for (i = 0; i < RTE_DIM(bulk_sizes); i++) {
 		rte_atomic32_set(&lcore_barrier, 2);
 
 		args[0].sz = args[1].sz = bulk_sizes[i];
 		args[0].s = args[1].s = s;
 
-		if (cores->c1 == rte_get_master_lcore()) {
+		if (cores->c1 == rte_get_main_lcore()) {
 			rte_eal_remote_launch(fn, &args[1], cores->c2);
 			fn(&args[0]);
 			rte_eal_wait_lcore(cores->c2);
@@ -205,14 +203,14 @@ run_on_n_cores(struct rte_stack *s, lcore_function_t fn, int n)
 	struct thread_args args[RTE_MAX_LCORE];
 	unsigned int i;
 
-	for (i = 0; i < ARRAY_SIZE(bulk_sizes); i++) {
+	for (i = 0; i < RTE_DIM(bulk_sizes); i++) {
 		unsigned int lcore_id;
 		int cnt = 0;
 		double avg;
 
 		rte_atomic32_set(&lcore_barrier, n);
 
-		RTE_LCORE_FOREACH_SLAVE(lcore_id) {
+		RTE_LCORE_FOREACH_WORKER(lcore_id) {
 			if (++cnt >= n)
 				break;
 
@@ -237,7 +235,7 @@ run_on_n_cores(struct rte_stack *s, lcore_function_t fn, int n)
 		avg = args[rte_lcore_id()].avg;
 
 		cnt = 0;
-		RTE_LCORE_FOREACH_SLAVE(lcore_id) {
+		RTE_LCORE_FOREACH_WORKER(lcore_id) {
 			if (++cnt >= n)
 				break;
 			avg += args[lcore_id].avg;
@@ -280,7 +278,7 @@ test_bulk_push_pop(struct rte_stack *s)
 	void *objs[MAX_BURST];
 	unsigned int sz, i;
 
-	for (sz = 0; sz < ARRAY_SIZE(bulk_sizes); sz++) {
+	for (sz = 0; sz < RTE_DIM(bulk_sizes); sz++) {
 		uint64_t start = rte_rdtsc();
 
 		for (i = 0; i < iterations; i++) {

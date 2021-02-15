@@ -8,8 +8,11 @@
 #ifndef _FSLMC_VFIO_H_
 #define _FSLMC_VFIO_H_
 
+#include <rte_compat.h>
 #include <rte_vfio.h>
 
+/* Pathname of FSL-MC devices directory. */
+#define SYSFS_FSL_MC_DEVICES	"/sys/bus/fsl-mc/devices"
 #define DPAA2_MC_DPNI_DEVID	7
 #define DPAA2_MC_DPSECI_DEVID	3
 #define DPAA2_MC_DPCON_DEVID	5
@@ -38,7 +41,12 @@ typedef struct fslmc_vfio_container {
 	struct fslmc_vfio_group *group;
 } fslmc_vfio_container;
 
+extern char *fslmc_container;
+
+__rte_internal
 int rte_dpaa2_intr_enable(struct rte_intr_handle *intr_handle, int index);
+
+__rte_internal
 int rte_dpaa2_intr_disable(struct rte_intr_handle *intr_handle, int index);
 
 int rte_dpaa2_vfio_setup_intr(struct rte_intr_handle *intr_handle,

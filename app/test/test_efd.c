@@ -30,14 +30,9 @@ struct flow_key {
 	uint16_t port_src;
 	uint16_t port_dst;
 	uint8_t proto;
-} __attribute__((packed));
+} __rte_packed;
 
-int efd_logtype_test;
-
-RTE_INIT(test_efd_init_log)
-{
-	efd_logtype_test = rte_log_register("test.efd");
-}
+RTE_LOG_REGISTER(efd_logtype_test, test.efd, INFO);
 
 /*
  * Print out result of unit test efd operation.
@@ -94,13 +89,13 @@ static struct flow_key keys[5] = {
 	}
 };
 /* Array to store the data */
-efd_value_t data[5];
+static efd_value_t data[5];
 
 static inline uint8_t efd_get_all_sockets_bitmask(void)
 {
 	uint8_t all_cpu_sockets_bitmask = 0;
 	unsigned int i;
-	unsigned int next_lcore = rte_get_master_lcore();
+	unsigned int next_lcore = rte_get_main_lcore();
 	const int val_true = 1, val_false = 0;
 	for (i = 0; i < rte_lcore_count(); i++) {
 		all_cpu_sockets_bitmask |= 1 << rte_lcore_to_socket_id(next_lcore);

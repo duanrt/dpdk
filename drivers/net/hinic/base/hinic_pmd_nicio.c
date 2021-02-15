@@ -312,8 +312,9 @@ static int init_sq_ctxts(struct hinic_nic_io *nic_io)
 					     HINIC_UCODE_CMD_MDY_QUEUE_CONTEXT,
 					     cmd_buf, &out_param, 0);
 		if (err || out_param != 0) {
-			PMD_DRV_LOG(ERR, "Failed to set SQ ctxts, err:%d", err);
-			err = -EFAULT;
+			PMD_DRV_LOG(ERR, "Failed to set SQ ctxts, err: %d",
+				err);
+			err = -EIO;
 			break;
 		}
 
@@ -368,10 +369,9 @@ static int init_rq_ctxts(struct hinic_nic_io *nic_io)
 					     HINIC_MOD_L2NIC,
 					     HINIC_UCODE_CMD_MDY_QUEUE_CONTEXT,
 					     cmd_buf, &out_param, 0);
-
 		if ((err) || out_param != 0) {
 			PMD_DRV_LOG(ERR, "Failed to set RQ ctxts");
-			err = -EFAULT;
+			err = -EIO;
 			break;
 		}
 
@@ -422,7 +422,7 @@ static int clean_queue_offload_ctxt(struct hinic_nic_io *nic_io,
 
 	if ((err) || (out_param)) {
 		PMD_DRV_LOG(ERR, "Failed to clean queue offload ctxts");
-		err = -EFAULT;
+		err = -EIO;
 	}
 
 	hinic_free_cmd_buf(hwdev, cmd_buf);
@@ -442,7 +442,7 @@ static int clean_qp_offload_ctxt(struct hinic_nic_io *nic_io)
  * @rx_buf_sz: receive buffer size
  * @return
  *   hw rx buffer size
- **/
+ */
 static u16 get_hw_rx_buf_size(u32 rx_buf_sz)
 {
 	u16 num_hw_types = sizeof(hinic_hw_rx_buf_size)
@@ -466,11 +466,13 @@ static u16 get_hw_rx_buf_size(u32 rx_buf_sz)
  * @sq_depth: the depth of transmit queue
  * @rx_buf_sz: receive buffer size from app
  * Return: 0 on success, negative error value otherwise.
- **/
+ */
 static int
 hinic_set_root_ctxt(void *hwdev, u16 rq_depth, u16 sq_depth, int rx_buf_sz)
 {
 	struct hinic_root_ctxt root_ctxt;
+	u16 out_size = sizeof(root_ctxt);
+	int err;
 
 	memset(&root_ctxt, 0, sizeof(root_ctxt));
 	root_ctxt.mgmt_msg_head.resp_aeq_num = HINIC_AEQ1;
@@ -483,10 +485,18 @@ hinic_set_root_ctxt(void *hwdev, u16 rq_depth, u16 sq_depth, int rx_buf_sz)
 	root_ctxt.rx_buf_sz = get_hw_rx_buf_size(rx_buf_sz);
 	root_ctxt.sq_depth  = (u16)ilog2(sq_depth);
 
-	return hinic_msg_to_mgmt_sync(hwdev, HINIC_MOD_COMM,
-				      HINIC_MGMT_CMD_VAT_SET,
-				      &root_ctxt, sizeof(root_ctxt),
-				      NULL, NULL, 0);
+	err = hinic_msg_to_mgmt_sync(hwdev, HINIC_MOD_COMM,
+				     HINIC_MGMT_CMD_VAT_SET,
+				     &root_ctxt, sizeof(root_ctxt),
+				     &root_ctxt, &out_size, 0);
+	if (err || !out_size || root_ctxt.mgmt_msg_head.status) {
+		PMD_DRV_LOG(ERR,
+			"Set root context failed, err: %d, status: 0x%x, out_size: 0x%x",
+			err, root_ctxt.mgmt_msg_head.status, out_size);
+		return -EIO;
+	}
+
+	return 0;
 }
 
 /**
@@ -495,10 +505,12 @@ hinic_set_root_ctxt(void *hwdev, u16 rq_depth, u16 sq_depth, int rx_buf_sz)
  * @return
  *   0 on success,
  *   negative error value otherwise.
- **/
+ */
 static int hinic_clean_root_ctxt(void *hwdev)
 {
 	struct hinic_root_ctxt root_ctxt;
+	u16 out_size = sizeof(root_ctxt);
+	int err;
 
 	memset(&root_ctxt, 0, sizeof(root_ctxt));
 	root_ctxt.mgmt_msg_head.resp_aeq_num = HINIC_AEQ1;
@@ -511,10 +523,18 @@ static int hinic_clean_root_ctxt(void *hwdev)
 	root_ctxt.rx_buf_sz = 0;
 	root_ctxt.sq_depth  = 0;
 
-	return hinic_msg_to_mgmt_sync(hwdev, HINIC_MOD_COMM,
-				      HINIC_MGMT_CMD_VAT_SET,
-				      &root_ctxt, sizeof(root_ctxt),
-				      NULL, NULL, 0);
+	err = hinic_msg_to_mgmt_sync(hwdev, HINIC_MOD_COMM,
+				     HINIC_MGMT_CMD_VAT_SET,
+				     &root_ctxt, sizeof(root_ctxt),
+				     &root_ctxt, &out_size, 0);
+	if (err || !out_size || root_ctxt.mgmt_msg_head.status) {
+		PMD_DRV_LOG(ERR,
+			"Clean root context failed, err: %d, status: 0x%x, out_size: 0x%x",
+			err, root_ctxt.mgmt_msg_head.status, out_size);
+		return -EIO;
+	}
+
+	return 0;
 }
 
 /* init qps ctxt and set sq ci attr and arm all sq and set vat page_size */
@@ -533,6 +553,15 @@ int hinic_init_qp_ctxts(struct hinic_hwdev *hwdev)
 		return err;
 	}
 
+	if (hwdev->cmdqs->status & HINIC_CMDQ_SET_FAIL) {
+		err = hinic_reinit_cmdq_ctxts(hwdev);
+		if (err) {
+			PMD_DRV_LOG(ERR, "Reinit cmdq context failed when dev start, err: %d",
+				err);
+			return err;
+		}
+	}
+
 	err = init_qp_ctxts(nic_io);
 	if (err) {
 		PMD_DRV_LOG(ERR, "Init QP ctxts failed, rc: %d", err);
@@ -542,26 +571,23 @@ int hinic_init_qp_ctxts(struct hinic_hwdev *hwdev)
 	/* clean LRO/TSO context space */
 	err = clean_qp_offload_ctxt(nic_io);
 	if (err) {
-		PMD_DRV_LOG(ERR, "Clean qp offload ctxts failed, rc: %d",
-			err);
+		PMD_DRV_LOG(ERR, "Clean qp offload ctxts failed, rc: %d", err);
 		return err;
 	}
 
 	rx_buf_sz = nic_io->rq_buf_size;
 
 	/* update rx buf size to function table */
-	err = hinic_set_rx_vhd_mode(hwdev, 0, rx_buf_sz);
+	err = hinic_set_rx_vhd_mode(hwdev, HINIC_VHD_TYPE_0B, rx_buf_sz);
 	if (err) {
-		PMD_DRV_LOG(ERR, "Set rx vhd mode failed, rc: %d",
-			err);
+		PMD_DRV_LOG(ERR, "Set rx vhd mode failed, rc: %d", err);
 		return err;
 	}
 
 	err = hinic_set_root_ctxt(hwdev, nic_io->rq_depth,
 				  nic_io->sq_depth, rx_buf_sz);
 	if (err) {
-		PMD_DRV_LOG(ERR, "Set root context failed, rc: %d",
-			err);
+		PMD_DRV_LOG(ERR, "Set root context failed, rc: %d", err);
 		return err;
 	}
 
@@ -576,8 +602,7 @@ int hinic_init_qp_ctxts(struct hinic_hwdev *hwdev)
 		sq_attr.dma_attr_off = 0;
 		err = hinic_set_ci_table(hwdev, q_id, &sq_attr);
 		if (err) {
-			PMD_DRV_LOG(ERR, "Set ci table failed, rc: %d",
-				err);
+			PMD_DRV_LOG(ERR, "Set ci table failed, rc: %d", err);
 			goto set_cons_idx_table_err;
 		}
 	}
@@ -618,6 +643,12 @@ static int hinic_init_nic_hwdev(struct hinic_hwdev *hwdev)
 		goto err_init_nic_hwdev;
 	}
 
+	err = hinic_vf_func_init(hwdev);
+	if (err) {
+		PMD_DRV_LOG(ERR, "Failed to init nic mbox");
+		goto err_init_nic_hwdev;
+	}
+
 	err = hinic_set_fast_recycle_mode(hwdev, RECYCLE_MODE_DPDK);
 	if (err) {
 		PMD_DRV_LOG(ERR, "Failed to set fast recycle mode");
@@ -632,7 +663,7 @@ err_init_nic_hwdev:
 
 static void hinic_free_nic_hwdev(struct hinic_hwdev *hwdev)
 {
-	hwdev->nic_io = NULL;
+	hinic_vf_func_free(hwdev);
 }
 
 int hinic_rx_tx_flush(struct hinic_hwdev *hwdev)
@@ -721,16 +752,12 @@ void hinic_update_rq_local_ci(struct hinic_hwdev *hwdev, u16 q_id, int wqe_cnt)
 
 static int hinic_alloc_nicio(struct hinic_hwdev *hwdev)
 {
-	int err;
-	u16 max_qps, num_qp;
 	struct hinic_nic_io *nic_io = hwdev->nic_io;
+	struct rte_pci_device *pdev = hwdev->pcidev_hdl;
+	u16 max_qps, num_qp;
+	int err;
 
 	max_qps = hinic_func_max_qnum(hwdev);
-	if ((max_qps & (max_qps - 1))) {
-		PMD_DRV_LOG(ERR, "wrong number of max_qps: %d",
-			max_qps);
-		return -EINVAL;
-	}
 
 	nic_io->max_qps = max_qps;
 	nic_io->num_qps = max_qps;
@@ -744,10 +771,10 @@ static int hinic_alloc_nicio(struct hinic_hwdev *hwdev)
 		goto alloc_qps_err;
 	}
 
-	nic_io->ci_vaddr_base =
-		dma_zalloc_coherent(hwdev,
+	nic_io->ci_vaddr_base = dma_zalloc_coherent(hwdev,
 				    CI_TABLE_SIZE(num_qp, HINIC_PAGE_SIZE),
-				    &nic_io->ci_dma_base, GFP_KERNEL);
+				    &nic_io->ci_dma_base,
+				    pdev->device.numa_node);
 	if (!nic_io->ci_vaddr_base) {
 		PMD_DRV_LOG(ERR, "Failed to allocate ci area");
 		err = -ENOMEM;
@@ -861,7 +888,7 @@ void hinic_deinit_nicio(struct hinic_hwdev *hwdev)
  * @return
  *   0 on success,
  *   negative error value otherwise.
- **/
+ */
 int hinic_convert_rx_buf_size(u32 rx_buf_sz, u32 *match_sz)
 {
 	u32 i, num_hw_types, best_match_sz;

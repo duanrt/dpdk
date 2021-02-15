@@ -62,7 +62,7 @@ struct tstamp {
 	uint16_t   sec_msb;
 	uint32_t   sec_lsb;
 	uint32_t   ns;
-}  __attribute__((packed));
+}  __rte_packed;
 
 struct clock_id {
 	uint8_t id[8];
@@ -71,7 +71,7 @@ struct clock_id {
 struct port_id {
 	struct clock_id        clock_id;
 	uint16_t               port_number;
-}  __attribute__((packed));
+}  __rte_packed;
 
 struct ptp_header {
 	uint8_t              msg_type;
@@ -86,30 +86,30 @@ struct ptp_header {
 	uint16_t             seq_id;
 	uint8_t              control;
 	int8_t               log_message_interval;
-} __attribute__((packed));
+} __rte_packed;
 
 struct sync_msg {
 	struct ptp_header   hdr;
 	struct tstamp       origin_tstamp;
-} __attribute__((packed));
+} __rte_packed;
 
 struct follow_up_msg {
 	struct ptp_header   hdr;
 	struct tstamp       precise_origin_tstamp;
 	uint8_t             suffix[0];
-} __attribute__((packed));
+} __rte_packed;
 
 struct delay_req_msg {
 	struct ptp_header   hdr;
 	struct tstamp       origin_tstamp;
-} __attribute__((packed));
+} __rte_packed;
 
 struct delay_resp_msg {
 	struct ptp_header    hdr;
 	struct tstamp        rx_tstamp;
 	struct port_id       req_port_id;
 	uint8_t              suffix[0];
-} __attribute__((packed));
+} __rte_packed;
 
 struct ptp_message {
 	union {
@@ -118,7 +118,7 @@ struct ptp_message {
 		struct delay_req_msg       delay_req;
 		struct follow_up_msg       follow_up;
 		struct delay_resp_msg      delay_resp;
-	} __attribute__((packed));
+	} __rte_packed;
 };
 
 struct ptpv2_data_slave_ordinary {
@@ -189,7 +189,14 @@ port_init(uint16_t port, struct rte_mempool *mbuf_pool)
 	if (!rte_eth_dev_is_valid_port(port))
 		return -1;
 
-	rte_eth_dev_info_get(port, &dev_info);
+	retval = rte_eth_dev_info_get(port, &dev_info);
+	if (retval != 0) {
+		printf("Error during getting device (port %u) info: %s\n",
+				port, strerror(-retval));
+
+		return retval;
+	}
+
 	if (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_MBUF_FAST_FREE)
 		port_conf.txmode.offloads |=
 			DEV_TX_OFFLOAD_MBUF_FAST_FREE;
@@ -240,7 +247,12 @@ port_init(uint16_t port, struct rte_mempool *mbuf_pool)
 	}
 
 	/* Enable RX in promiscuous mode for the Ethernet device. */
-	rte_eth_promiscuous_enable(port);
+	retval = rte_eth_promiscuous_enable(port);
+	if (retval != 0) {
+		printf("Promiscuous mode enable failed: %s\n",
+			rte_strerror(-retval));
+		return retval;
+	}
 
 	return 0;
 }
@@ -360,12 +372,13 @@ parse_sync(struct ptpv2_data_slave_ordinary *ptp_data, uint16_t rx_tstamp_idx)
 }
 
 /*
- * Parse the PTP FOLLOWUP message and send DELAY_REQ to the master clock.
+ * Parse the PTP FOLLOWUP message and send DELAY_REQ to the main clock.
  */
 static void
 parse_fup(struct ptpv2_data_slave_ordinary *ptp_data)
 {
 	struct rte_ether_hdr *eth_hdr;
+	struct rte_ether_addr eth_addr;
 	struct ptp_header *ptp_hdr;
 	struct clock_id *client_clkid;
 	struct ptp_message *ptp_msg;
@@ -375,6 +388,7 @@ parse_fup(struct ptpv2_data_slave_ordinary *ptp_data)
 	size_t pkt_size;
 	int wait_us;
 	struct rte_mbuf *m = ptp_data->m;
+	int ret;
 
 	eth_hdr = rte_pktmbuf_mtod(m, struct rte_ether_hdr *);
 	ptp_hdr = (struct ptp_header *)(rte_pktmbuf_mtod(m, char *)
@@ -395,6 +409,13 @@ parse_fup(struct ptpv2_data_slave_ordinary *ptp_data)
 		(((uint64_t)ntohs(origin_tstamp->sec_msb)) << 32);
 
 	if (ptp_data->seqID_FOLLOWUP == ptp_data->seqID_SYNC) {
+		ret = rte_eth_macaddr_get(ptp_data->portid, &eth_addr);
+		if (ret != 0) {
+			printf("\nCore %u: port %u failed to get MAC address: %s\n",
+				rte_lcore_id(), ptp_data->portid,
+				rte_strerror(-ret));
+			return;
+		}
 
 		created_pkt = rte_pktmbuf_alloc(mbuf_pool);
 		pkt_size = sizeof(struct rte_ether_hdr) +
@@ -402,7 +423,7 @@ parse_fup(struct ptpv2_data_slave_ordinary *ptp_data)
 		created_pkt->data_len = pkt_size;
 		created_pkt->pkt_len = pkt_size;
 		eth_hdr = rte_pktmbuf_mtod(created_pkt, struct rte_ether_hdr *);
-		rte_eth_macaddr_get(ptp_data->portid, &eth_hdr->s_addr);
+		rte_ether_addr_copy(&eth_addr, &eth_hdr->s_addr);
 
 		/* Set multicast address 01-1B-19-00-00-00. */
 		rte_ether_addr_copy(&eth_multicast, &eth_hdr->d_addr);
@@ -575,7 +596,7 @@ parse_ptp_frames(uint16_t portid, struct rte_mbuf *m) {
  * The lcore main. This is the main thread that does the work, reading from an
  * input port and writing to an output port.
  */
-static __attribute__((noreturn)) void
+static __rte_noreturn void
 lcore_main(void)
 {
 	uint16_t portid;
@@ -629,10 +650,7 @@ ptp_parse_portmask(const char *portmask)
 	pm = strtoul(portmask, &end, 16);
 
 	if ((portmask[0] == '\0') || (end == NULL) || (*end != '\0'))
-		return -1;
-
-	if (pm == 0)
-		return -1;
+		return 0;
 
 	return pm;
 }
@@ -764,7 +782,7 @@ main(int argc, char *argv[])
 	if (rte_lcore_count() > 1)
 		printf("\nWARNING: Too many lcores enabled. Only 1 used.\n");
 
-	/* Call lcore_main on the master core only. */
+	/* Call lcore_main on the main core only. */
 	lcore_main();
 
 	return 0;

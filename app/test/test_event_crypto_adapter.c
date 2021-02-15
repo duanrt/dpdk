@@ -182,7 +182,6 @@ test_op_forward_mode(uint8_t session_less)
 	/* Setup Cipher Parameters */
 	cipher_xform.type = RTE_CRYPTO_SYM_XFORM_CIPHER;
 	cipher_xform.next = NULL;
-
 	cipher_xform.cipher.algo = RTE_CRYPTO_CIPHER_NULL;
 	cipher_xform.cipher.op = RTE_CRYPTO_CIPHER_OP_ENCRYPT;
 
@@ -199,11 +198,12 @@ test_op_forward_mode(uint8_t session_less)
 		TEST_ASSERT_NOT_NULL(sess, "Session creation failed\n");
 
 		/* Create Crypto session*/
-		rte_cryptodev_sym_session_init(TEST_CDEV_ID, sess,
+		ret = rte_cryptodev_sym_session_init(TEST_CDEV_ID, sess,
 				&cipher_xform, params.session_priv_mpool);
+		TEST_ASSERT_SUCCESS(ret, "Failed to init session\n");
 
-		ret = rte_event_crypto_adapter_caps_get(TEST_ADAPTER_ID,
-							evdev, &cap);
+		ret = rte_event_crypto_adapter_caps_get(evdev, TEST_CDEV_ID,
+							&cap);
 		TEST_ASSERT_SUCCESS(ret, "Failed to get adapter capabilities\n");
 
 		if (cap & RTE_EVENT_CRYPTO_ADAPTER_CAP_SESSION_PRIVATE_DATA) {
@@ -289,11 +289,16 @@ test_sessionless_with_op_forward_mode(void)
 	uint32_t cap;
 	int ret;
 
-	ret = rte_event_crypto_adapter_caps_get(TEST_ADAPTER_ID, evdev, &cap);
+	ret = rte_event_crypto_adapter_caps_get(evdev, TEST_CDEV_ID, &cap);
 	TEST_ASSERT_SUCCESS(ret, "Failed to get adapter capabilities\n");
 
-	if (!(cap & RTE_EVENT_CRYPTO_ADAPTER_CAP_INTERNAL_PORT_OP_FWD))
+	if (!(cap & RTE_EVENT_CRYPTO_ADAPTER_CAP_INTERNAL_PORT_OP_FWD) &&
+	    !(cap & RTE_EVENT_CRYPTO_ADAPTER_CAP_INTERNAL_PORT_OP_NEW))
 		map_adapter_service_core();
+	else {
+		if (!(cap & RTE_EVENT_CRYPTO_ADAPTER_CAP_INTERNAL_PORT_OP_FWD))
+			return TEST_SKIPPED;
+	}
 
 	TEST_ASSERT_SUCCESS(rte_event_crypto_adapter_start(TEST_ADAPTER_ID),
 				"Failed to start event crypto adapter");
@@ -309,11 +314,16 @@ test_session_with_op_forward_mode(void)
 	uint32_t cap;
 	int ret;
 
-	ret = rte_event_crypto_adapter_caps_get(TEST_ADAPTER_ID, evdev, &cap);
+	ret = rte_event_crypto_adapter_caps_get(evdev, TEST_CDEV_ID, &cap);
 	TEST_ASSERT_SUCCESS(ret, "Failed to get adapter capabilities\n");
 
-	if (!(cap & RTE_EVENT_CRYPTO_ADAPTER_CAP_INTERNAL_PORT_OP_FWD))
+	if (!(cap & RTE_EVENT_CRYPTO_ADAPTER_CAP_INTERNAL_PORT_OP_FWD) &&
+	    !(cap & RTE_EVENT_CRYPTO_ADAPTER_CAP_INTERNAL_PORT_OP_NEW))
 		map_adapter_service_core();
+	else {
+		if (!(cap & RTE_EVENT_CRYPTO_ADAPTER_CAP_INTERNAL_PORT_OP_FWD))
+			return TEST_SKIPPED;
+	}
 
 	TEST_ASSERT_SUCCESS(rte_event_crypto_adapter_start(TEST_ADAPTER_ID
 				), "Failed to start event crypto adapter");
@@ -372,7 +382,6 @@ test_op_new_mode(uint8_t session_less)
 	/* Setup Cipher Parameters */
 	cipher_xform.type = RTE_CRYPTO_SYM_XFORM_CIPHER;
 	cipher_xform.next = NULL;
-
 	cipher_xform.cipher.algo = RTE_CRYPTO_CIPHER_NULL;
 	cipher_xform.cipher.op = RTE_CRYPTO_CIPHER_OP_ENCRYPT;
 
@@ -387,8 +396,8 @@ test_op_new_mode(uint8_t session_less)
 				params.session_mpool);
 		TEST_ASSERT_NOT_NULL(sess, "Session creation failed\n");
 
-		ret = rte_event_crypto_adapter_caps_get(TEST_ADAPTER_ID,
-							evdev, &cap);
+		ret = rte_event_crypto_adapter_caps_get(evdev, TEST_CDEV_ID,
+							&cap);
 		TEST_ASSERT_SUCCESS(ret, "Failed to get adapter capabilities\n");
 
 		if (cap & RTE_EVENT_CRYPTO_ADAPTER_CAP_SESSION_PRIVATE_DATA) {
@@ -398,8 +407,10 @@ test_op_new_mode(uint8_t session_less)
 			rte_cryptodev_sym_session_set_user_data(sess,
 						&m_data, sizeof(m_data));
 		}
-		rte_cryptodev_sym_session_init(TEST_CDEV_ID, sess,
+		ret = rte_cryptodev_sym_session_init(TEST_CDEV_ID, sess,
 				&cipher_xform, params.session_priv_mpool);
+		TEST_ASSERT_SUCCESS(ret, "Failed to init session\n");
+
 		rte_crypto_op_attach_sym_session(op, sess);
 	} else {
 		struct rte_crypto_sym_xform *first_xform;
@@ -435,12 +446,16 @@ test_sessionless_with_op_new_mode(void)
 	uint32_t cap;
 	int ret;
 
-	ret = rte_event_crypto_adapter_caps_get(TEST_ADAPTER_ID, evdev, &cap);
+	ret = rte_event_crypto_adapter_caps_get(evdev, TEST_CDEV_ID, &cap);
 	TEST_ASSERT_SUCCESS(ret, "Failed to get adapter capabilities\n");
 
-	if (!(cap & RTE_EVENT_CRYPTO_ADAPTER_CAP_INTERNAL_PORT_OP_FWD) ||
+	if (!(cap & RTE_EVENT_CRYPTO_ADAPTER_CAP_INTERNAL_PORT_OP_FWD) &&
 	    !(cap & RTE_EVENT_CRYPTO_ADAPTER_CAP_INTERNAL_PORT_OP_NEW))
 		map_adapter_service_core();
+	else {
+		if (!(cap & RTE_EVENT_CRYPTO_ADAPTER_CAP_INTERNAL_PORT_OP_NEW))
+			return TEST_SKIPPED;
+	}
 
 	/* start the event crypto adapter */
 	TEST_ASSERT_SUCCESS(rte_event_crypto_adapter_start(TEST_ADAPTER_ID),
@@ -457,12 +472,16 @@ test_session_with_op_new_mode(void)
 	uint32_t cap;
 	int ret;
 
-	ret = rte_event_crypto_adapter_caps_get(TEST_ADAPTER_ID, evdev, &cap);
+	ret = rte_event_crypto_adapter_caps_get(evdev, TEST_CDEV_ID, &cap);
 	TEST_ASSERT_SUCCESS(ret, "Failed to get adapter capabilities\n");
 
-	if (!(cap & RTE_EVENT_CRYPTO_ADAPTER_CAP_INTERNAL_PORT_OP_FWD) ||
+	if (!(cap & RTE_EVENT_CRYPTO_ADAPTER_CAP_INTERNAL_PORT_OP_FWD) &&
 	    !(cap & RTE_EVENT_CRYPTO_ADAPTER_CAP_INTERNAL_PORT_OP_NEW))
 		map_adapter_service_core();
+	else {
+		if (!(cap & RTE_EVENT_CRYPTO_ADAPTER_CAP_INTERNAL_PORT_OP_NEW))
+			return TEST_SKIPPED;
+	}
 
 	TEST_ASSERT_SUCCESS(rte_event_crypto_adapter_start(TEST_ADAPTER_ID),
 				"Failed to start event crypto adapter");
@@ -531,12 +550,14 @@ configure_cryptodev(void)
 
 	params.session_mpool = rte_cryptodev_sym_session_pool_create(
 			"CRYPTO_ADAPTER_SESSION_MP",
-			MAX_NB_SESSIONS, 0, 0, 0, SOCKET_ID_ANY);
+			MAX_NB_SESSIONS, 0, 0,
+			sizeof(union rte_event_crypto_metadata),
+			SOCKET_ID_ANY);
 	TEST_ASSERT_NOT_NULL(params.session_mpool,
 			"session mempool allocation failed\n");
 
 	params.session_priv_mpool = rte_mempool_create(
-				"CRYPTO_ADAPTER_SESSION_MP_PRIV",
+				"CRYPTO_AD_SESS_MP_PRIV",
 				MAX_NB_SESSIONS,
 				session_size,
 				0, 0, NULL, NULL, NULL,
@@ -673,7 +694,7 @@ test_crypto_adapter_create(void)
 
 	/* Create adapter with default port creation callback */
 	ret = rte_event_crypto_adapter_create(TEST_ADAPTER_ID,
-					      TEST_CDEV_ID,
+					      evdev,
 					      &conf, 0);
 	TEST_ASSERT_SUCCESS(ret, "Failed to create event crypto adapter\n");
 
@@ -686,7 +707,7 @@ test_crypto_adapter_qp_add_del(void)
 	uint32_t cap;
 	int ret;
 
-	ret = rte_event_crypto_adapter_caps_get(TEST_ADAPTER_ID, evdev, &cap);
+	ret = rte_event_crypto_adapter_caps_get(evdev, TEST_CDEV_ID, &cap);
 	TEST_ASSERT_SUCCESS(ret, "Failed to get adapter capabilities\n");
 
 	if (cap & RTE_EVENT_CRYPTO_ADAPTER_CAP_INTERNAL_PORT_QP_EV_BIND) {
@@ -717,14 +738,29 @@ configure_event_crypto_adapter(enum rte_event_crypto_adapter_mode mode)
 	uint32_t cap;
 	int ret;
 
+	ret = rte_event_crypto_adapter_caps_get(evdev, TEST_CDEV_ID, &cap);
+	TEST_ASSERT_SUCCESS(ret, "Failed to get adapter capabilities\n");
+
+	/* Skip mode and capability mismatch check for SW eventdev */
+	if (!(cap & RTE_EVENT_CRYPTO_ADAPTER_CAP_INTERNAL_PORT_OP_NEW) &&
+	    !(cap & RTE_EVENT_CRYPTO_ADAPTER_CAP_INTERNAL_PORT_OP_FWD) &&
+	    !(cap & RTE_EVENT_CRYPTO_ADAPTER_CAP_INTERNAL_PORT_QP_EV_BIND))
+		goto adapter_create;
+
+	if ((mode == RTE_EVENT_CRYPTO_ADAPTER_OP_FORWARD) &&
+	    !(cap & RTE_EVENT_CRYPTO_ADAPTER_CAP_INTERNAL_PORT_OP_FWD))
+		return -ENOTSUP;
+
+	if ((mode == RTE_EVENT_CRYPTO_ADAPTER_OP_NEW) &&
+	    !(cap & RTE_EVENT_CRYPTO_ADAPTER_CAP_INTERNAL_PORT_OP_NEW))
+		return -ENOTSUP;
+
+adapter_create:
 	/* Create adapter with default port creation callback */
 	ret = rte_event_crypto_adapter_create(TEST_ADAPTER_ID,
-					      TEST_CDEV_ID,
+					      evdev,
 					      &conf, mode);
 	TEST_ASSERT_SUCCESS(ret, "Failed to create event crypto adapter\n");
-
-	ret = rte_event_crypto_adapter_caps_get(TEST_ADAPTER_ID, evdev, &cap);
-	TEST_ASSERT_SUCCESS(ret, "Failed to get adapter capabilities\n");
 
 	if (cap & RTE_EVENT_CRYPTO_ADAPTER_CAP_INTERNAL_PORT_QP_EV_BIND) {
 		ret = rte_event_crypto_adapter_queue_pair_add(TEST_ADAPTER_ID,
@@ -780,6 +816,8 @@ test_crypto_adapter_conf(enum rte_event_crypto_adapter_mode mode)
 			TEST_ASSERT(ret >= 0, "Failed to link queue %d "
 					"port=%u\n", qid,
 					params.crypto_event_port_id);
+		} else {
+			return ret;
 		}
 		crypto_adapter_setup_done = 1;
 	}
@@ -814,9 +852,8 @@ test_crypto_adapter_conf_op_forward_mode(void)
 	enum rte_event_crypto_adapter_mode mode;
 
 	mode = RTE_EVENT_CRYPTO_ADAPTER_OP_FORWARD;
-	test_crypto_adapter_conf(mode);
 
-	return TEST_SUCCESS;
+	return test_crypto_adapter_conf(mode);
 }
 
 static int
@@ -825,8 +862,8 @@ test_crypto_adapter_conf_op_new_mode(void)
 	enum rte_event_crypto_adapter_mode mode;
 
 	mode = RTE_EVENT_CRYPTO_ADAPTER_OP_NEW;
-	test_crypto_adapter_conf(mode);
-	return TEST_SUCCESS;
+
+	return test_crypto_adapter_conf(mode);
 }
 
 
@@ -851,6 +888,27 @@ testsuite_setup(void)
 }
 
 static void
+crypto_adapter_teardown(void)
+{
+	int ret;
+
+	ret = rte_event_crypto_adapter_stop(TEST_ADAPTER_ID);
+	if (ret < 0)
+		RTE_LOG(ERR, USER1, "Failed to stop adapter!");
+
+	ret = rte_event_crypto_adapter_queue_pair_del(TEST_ADAPTER_ID,
+					TEST_CDEV_ID, TEST_CDEV_QP_ID);
+	if (ret < 0)
+		RTE_LOG(ERR, USER1, "Failed to delete queue pair!");
+
+	ret = rte_event_crypto_adapter_free(TEST_ADAPTER_ID);
+	if (ret < 0)
+		RTE_LOG(ERR, USER1, "Failed to free adapter!");
+
+	crypto_adapter_setup_done = 0;
+}
+
+static void
 crypto_teardown(void)
 {
 	/* Free mbuf mempool */
@@ -869,6 +927,7 @@ crypto_teardown(void)
 		params.session_mpool = NULL;
 	}
 	if (params.session_priv_mpool != NULL) {
+		rte_mempool_avail_count(params.session_priv_mpool);
 		rte_mempool_free(params.session_priv_mpool);
 		params.session_priv_mpool = NULL;
 	}
@@ -891,6 +950,7 @@ eventdev_teardown(void)
 static void
 testsuite_teardown(void)
 {
+	crypto_adapter_teardown();
 	crypto_teardown();
 	eventdev_teardown();
 }

@@ -1,10 +1,13 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
-version = 2
+if is_windows
+	build = false
+	reason = 'not supported on Windows'
+	subdir_done()
+endif
 
-allow_experimental_apis = true
 
-install_headers('rte_bus_vmbus.h','rte_vmbus_reg.h')
+headers = files('rte_bus_vmbus.h','rte_vmbus_reg.h')
 
 sources = files('vmbus_common.c',
 		'vmbus_channel.c',
@@ -17,5 +20,5 @@ if is_linux
 	includes += include_directories('linux')
 else
 	build = false
-	reason = 'only supported on linux'
+	reason = 'only supported on Linux'
 endif

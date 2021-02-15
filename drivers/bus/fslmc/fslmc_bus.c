@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
- *   Copyright 2016,2018 NXP
+ *   Copyright 2016,2018-2019 NXP
  *
  */
 
@@ -10,11 +10,11 @@
 
 #include <rte_log.h>
 #include <rte_bus.h>
-#include <rte_eal_memconfig.h>
 #include <rte_malloc.h>
 #include <rte_devargs.h>
 #include <rte_memcpy.h>
-#include <rte_ethdev_driver.h>
+#include <ethdev_driver.h>
+#include <rte_mbuf_dyn.h>
 
 #include <rte_fslmc.h>
 #include <fslmc_vfio.h>
@@ -22,13 +22,14 @@
 
 #include <dpaax_iova_table.h>
 
-int dpaa2_logtype_bus;
-
 #define VFIO_IOMMU_GROUP_PATH "/sys/kernel/iommu_groups"
 #define FSLMC_BUS_NAME	fslmc
 
 struct rte_fslmc_bus rte_fslmc_bus;
 uint8_t dpaa2_virt_mode;
+
+#define DPAA2_SEQN_DYNFIELD_NAME "dpaa2_seqn_dynfield"
+int dpaa2_seqn_dynfield_offset = -1;
 
 uint32_t
 rte_fslmc_get_device_count(enum rte_dpaa2_dev_type device_type)
@@ -37,8 +38,6 @@ rte_fslmc_get_device_count(enum rte_dpaa2_dev_type device_type)
 		return 0;
 	return rte_fslmc_bus.device_count[device_type];
 }
-
-RTE_DEFINE_PER_LCORE(struct dpaa2_portal_dqrr, dpaa2_held_bufs);
 
 static void
 cleanup_fslmc_device_list(void)
@@ -116,14 +115,9 @@ static void
 dump_device_list(void)
 {
 	struct rte_dpaa2_device *dev;
-	uint32_t global_log_level;
-	int local_log_level;
 
 	/* Only if the log level has been set to Debugging, print list */
-	global_log_level = rte_log_get_global_level();
-	local_log_level = rte_log_get_level(dpaa2_logtype_bus);
-	if (global_log_level == RTE_LOG_DEBUG ||
-	    local_log_level == RTE_LOG_DEBUG) {
+	if (rte_log_can_log(dpaa2_logtype_bus, RTE_LOG_DEBUG)) {
 		DPAA2_BUS_LOG(DEBUG, "List of devices scanned on bus:");
 		TAILQ_FOREACH(dev, &rte_fslmc_bus.device_list, next) {
 			DPAA2_BUS_LOG(DEBUG, "\t\t%s", dev->device.name);
@@ -191,6 +185,8 @@ scan_one_fslmc_device(char *dev_name)
 		dev->dev_type = DPAA2_QDMA;
 	else if (!strncmp("dpdmux", t_ptr, 6))
 		dev->dev_type = DPAA2_MUX;
+	else if (!strncmp("dprtc", t_ptr, 5))
+		dev->dev_type = DPAA2_DPRTC;
 	else
 		dev->dev_type = DPAA2_UNKNOWN;
 
@@ -234,8 +230,9 @@ rte_fslmc_parse(const char *name, void *addr)
 {
 	uint16_t dev_id;
 	char *t_ptr;
-	char *sep = NULL;
+	const char *sep;
 	uint8_t sep_exists = 0;
+	int ret = -1;
 
 	DPAA2_BUS_DEBUG("Parsing dev=(%s)", name);
 
@@ -265,10 +262,11 @@ rte_fslmc_parse(const char *name, void *addr)
 		} else {
 			DPAA2_BUS_DEBUG("Invalid device for matching (%s).",
 					name);
+			ret = -EINVAL;
 			goto err_out;
 		}
 	} else
-		sep = strdup(name);
+		sep = name;
 
 jump_out:
 	/* Validate device name */
@@ -282,23 +280,23 @@ jump_out:
 	    strncmp("dpdmai", sep, 6) &&
 	    strncmp("dpdmux", sep, 6)) {
 		DPAA2_BUS_DEBUG("Unknown or unsupported device (%s)", sep);
+		ret = -EINVAL;
 		goto err_out;
 	}
 
 	t_ptr = strchr(sep, '.');
 	if (!t_ptr || sscanf(t_ptr + 1, "%hu", &dev_id) != 1) {
 		DPAA2_BUS_ERR("Missing device id in device name (%s)", sep);
+		ret = -EINVAL;
 		goto err_out;
 	}
 
 	if (addr)
 		strcpy(addr, sep);
 
-	return 0;
+	ret = 0;
 err_out:
-	if (!sep_exists && sep)
-		free(sep);
-	return -EINVAL;
+	return ret;
 }
 
 static int
@@ -323,8 +321,7 @@ rte_fslmc_scan(void)
 		goto scan_fail;
 
 	/* Scan devices on the group */
-	snprintf(fslmc_dirpath, sizeof(fslmc_dirpath), "%s/%d/devices",
-			VFIO_IOMMU_GROUP_PATH, groupid);
+	sprintf(fslmc_dirpath, "%s/%s", SYSFS_FSL_MC_DEVICES, fslmc_container);
 	dir = opendir(fslmc_dirpath);
 	if (!dir) {
 		DPAA2_BUS_ERR("Unable to open VFIO group directory");
@@ -332,7 +329,7 @@ rte_fslmc_scan(void)
 	}
 
 	while ((entry = readdir(dir)) != NULL) {
-		if (entry->d_name[0] == '.' || entry->d_type != DT_LNK)
+		if (entry->d_name[0] == '.' || entry->d_type != DT_DIR)
 			continue;
 
 		ret = scan_one_fslmc_device(entry->d_name);
@@ -381,8 +378,21 @@ rte_fslmc_probe(void)
 	struct rte_dpaa2_device *dev;
 	struct rte_dpaa2_driver *drv;
 
+	static const struct rte_mbuf_dynfield dpaa2_seqn_dynfield_desc = {
+		.name = DPAA2_SEQN_DYNFIELD_NAME,
+		.size = sizeof(dpaa2_seqn_t),
+		.align = __alignof__(dpaa2_seqn_t),
+	};
+
 	if (TAILQ_EMPTY(&rte_fslmc_bus.device_list))
 		return 0;
+
+	dpaa2_seqn_dynfield_offset =
+		rte_mbuf_dynfield_register(&dpaa2_seqn_dynfield_desc);
+	if (dpaa2_seqn_dynfield_offset < 0) {
+		DPAA2_BUS_ERR("Failed to register mbuf field for dpaa sequence number");
+		return 0;
+	}
 
 	ret = fslmc_vfio_setup_group();
 	if (ret) {
@@ -393,12 +403,15 @@ rte_fslmc_probe(void)
 	/* Map existing segments as well as, in case of hotpluggable memory,
 	 * install callback handler.
 	 */
-	ret = rte_fslmc_vfio_dmamap();
-	if (ret) {
-		DPAA2_BUS_ERR("Unable to DMA map existing VAs: (%d)", ret);
-		/* Not continuing ahead */
-		DPAA2_BUS_ERR("FSLMC VFIO Mapping failed");
-		return 0;
+	if (rte_eal_process_type() == RTE_PROC_PRIMARY) {
+		ret = rte_fslmc_vfio_dmamap();
+		if (ret) {
+			DPAA2_BUS_ERR("Unable to DMA map existing VAs: (%d)",
+				      ret);
+			/* Not continuing ahead */
+			DPAA2_BUS_ERR("FSLMC VFIO Mapping failed");
+			return 0;
+		}
 	}
 
 	ret = fslmc_vfio_process_group();
@@ -407,7 +420,7 @@ rte_fslmc_probe(void)
 		return 0;
 	}
 
-	probe_all = rte_fslmc_bus.bus.conf.scan_mode != RTE_BUS_SCAN_WHITELIST;
+	probe_all = rte_fslmc_bus.bus.conf.scan_mode != RTE_BUS_SCAN_ALLOWLIST;
 
 	/* In case of PA, the FD addresses returned by qbman APIs are physical
 	 * addresses, which need conversion into equivalent VA address for
@@ -419,8 +432,11 @@ rte_fslmc_probe(void)
 	 *
 	 * Error is ignored as relevant logs are handled within dpaax and
 	 * handling for unavailable dpaax table too is transparent to caller.
+	 *
+	 * And, the IOVA table is only applicable in case of PA mode.
 	 */
-	dpaax_iova_table_populate();
+	if (rte_eal_iova_mode() == RTE_IOVA_PA)
+		dpaax_iova_table_populate();
 
 	TAILQ_FOREACH(dev, &rte_fslmc_bus.device_list, next) {
 		TAILQ_FOREACH(drv, &rte_fslmc_bus.driver_list, next) {
@@ -435,16 +451,15 @@ rte_fslmc_probe(void)
 				continue;
 
 			if (dev->device.devargs &&
-			  dev->device.devargs->policy == RTE_DEV_BLACKLISTED) {
-				DPAA2_BUS_LOG(DEBUG, "%s Blacklisted, skipping",
+			    dev->device.devargs->policy == RTE_DEV_BLOCKED) {
+				DPAA2_BUS_LOG(DEBUG, "%s Blocked, skipping",
 					      dev->device.name);
 				continue;
 			}
 
 			if (probe_all ||
 			   (dev->device.devargs &&
-			   dev->device.devargs->policy ==
-			   RTE_DEV_WHITELISTED)) {
+			    dev->device.devargs->policy == RTE_DEV_ALLOWED)) {
 				ret = drv->probe(drv, dev);
 				if (ret) {
 					DPAA2_BUS_ERR("Unable to probe");
@@ -517,7 +532,8 @@ rte_fslmc_driver_unregister(struct rte_dpaa2_driver *driver)
 	/* Cleanup the PA->VA Translation table; From whereever this function
 	 * is called from.
 	 */
-	dpaax_iova_table_depopulate();
+	if (rte_eal_iova_mode() == RTE_IOVA_PA)
+		dpaax_iova_table_depopulate();
 
 	TAILQ_REMOVE(&fslmc_bus->driver_list, driver, next);
 	/* Update Bus references */
@@ -599,6 +615,11 @@ fslmc_bus_dev_iterate(const void *start, const char *str,
 	struct rte_dpaa2_device *dev;
 	char *dup, *dev_name = NULL;
 
+	if (str == NULL) {
+		DPAA2_BUS_DEBUG("No device string");
+		return NULL;
+	}
+
 	/* Expectation is that device would be name=device_name */
 	if (strncmp(str, "name=", 5) != 0) {
 		DPAA2_BUS_DEBUG("Invalid device string (%s)\n", str);
@@ -645,11 +666,4 @@ struct rte_fslmc_bus rte_fslmc_bus = {
 };
 
 RTE_REGISTER_BUS(FSLMC_BUS_NAME, rte_fslmc_bus.bus);
-
-RTE_INIT(fslmc_init_log)
-{
-	/* Bus level logs */
-	dpaa2_logtype_bus = rte_log_register("bus.fslmc");
-	if (dpaa2_logtype_bus >= 0)
-		rte_log_set_level(dpaa2_logtype_bus, RTE_LOG_NOTICE);
-}
+RTE_LOG_REGISTER(dpaa2_logtype_bus, bus.fslmc, NOTICE);

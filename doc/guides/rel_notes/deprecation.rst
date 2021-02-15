@@ -4,18 +4,12 @@
 ABI and API Deprecation
 =======================
 
-See the :doc:`guidelines document for details of the ABI policy </contributing/versioning>`.
-API and ABI deprecation notices are to be posted here.
-
+See the guidelines document for details of the :doc:`ABI policy
+<../contributing/abi_policy>`. API and ABI deprecation notices are to be posted
+here.
 
 Deprecation Notices
 -------------------
-
-* meson: The minimum supported version of meson for configuring and building
-  DPDK will be increased to v0.47.1 (from 0.41) from DPDK 19.05 onwards. For
-  those users with a version earlier than 0.47.1, an updated copy of meson
-  can be got using the ``pip``, or ``pip3``, tool for downloading python
-  packages.
 
 * kvargs: The function ``rte_kvargs_process`` will get a new parameter
   for returning key match count. It will ease handling of no-match case.
@@ -23,47 +17,101 @@ Deprecation Notices
 * eal: The function ``rte_eal_remote_launch`` will return new error codes
   after read or write error on the pipe, instead of calling ``rte_panic``.
 
-* eal: both declaring and identifying devices will be streamlined in v18.11.
-  New functions will appear to query a specific port from buses, classes of
-  device and device drivers. Device declaration will be made coherent with the
-  new scheme of device identification.
-  As such, ``rte_devargs`` device representation will change.
+* rte_atomicNN_xxx: These APIs do not take memory order parameter. This does
+  not allow for writing optimized code for all the CPU architectures supported
+  in DPDK. DPDK will adopt C11 atomic operations semantics and provide wrappers
+  using C11 atomic built-ins. These wrappers must be used for patches that
+  need to be merged in 20.08 onwards. This change will not introduce any
+  performance degradation.
 
-  - The enum ``rte_devtype`` was used to identify a bus and will disappear.
-  - Functions previously deprecated will change or disappear:
+* rte_smp_*mb: These APIs provide full barrier functionality. However, many
+  use cases do not require full barriers. To support such use cases, DPDK will
+  adopt C11 barrier semantics and provide wrappers using C11 atomic built-ins.
+  These wrappers must be used for patches that need to be merged in 20.08
+  onwards. This change will not introduce any performance degradation.
 
-    + ``rte_eal_devargs_type_count``
+* lib: will fix extending some enum/define breaking the ABI. There are multiple
+  samples in DPDK that enum/define terminated with a ``.*MAX.*`` value which is
+  used by iterators, and arrays holding these values are sized with this
+  ``.*MAX.*`` value. So extending this enum/define increases the ``.*MAX.*``
+  value which increases the size of the array and depending on how/where the
+  array is used this may break the ABI.
+  ``RTE_ETH_FLOW_MAX`` is one sample of the mentioned case, adding a new flow
+  type will break the ABI because of ``flex_mask[RTE_ETH_FLOW_MAX]`` array
+  usage in following public struct hierarchy:
+  ``rte_eth_fdir_flex_conf -> rte_fdir_conf -> rte_eth_conf (in the middle)``.
+  Need to identify this kind of usages and fix in 20.11, otherwise this blocks
+  us extending existing enum/define.
+  One solution can be using a fixed size array instead of ``.*MAX.*`` value.
 
-* vfio: removal of ``rte_vfio_dma_map`` and ``rte_vfio_dma_unmap`` APIs which
-  have been replaced with ``rte_dev_dma_map`` and ``rte_dev_dma_unmap``
-  functions.  The due date for the removal targets DPDK 20.02.
+* ethdev: The flow director API, including ``rte_eth_conf.fdir_conf`` field,
+  and the related structures (``rte_fdir_*`` and ``rte_eth_fdir_*``),
+  will be removed in DPDK 20.11.
 
-* pci: Several exposed functions are misnamed.
-  The following functions are deprecated starting from v17.11 and are replaced:
+* ethdev: New offload flags ``DEV_RX_OFFLOAD_FLOW_MARK`` will be added in 19.11.
+  This will allow application to enable or disable PMDs from updating
+  ``rte_mbuf::hash::fdir``.
+  This scheme will allow PMDs to avoid writes to ``rte_mbuf`` fields on Rx and
+  thereby improve Rx performance if application wishes do so.
+  In 19.11 PMDs will still update the field even when the offload is not
+  enabled.
 
-  - ``eal_parse_pci_BDF`` replaced by ``rte_pci_addr_parse``
-  - ``eal_parse_pci_DomBDF`` replaced by ``rte_pci_addr_parse``
-  - ``rte_eal_compare_pci_addr`` replaced by ``rte_pci_addr_cmp``
+* ethdev: ``uint32_t max_rx_pkt_len`` field of ``struct rte_eth_rxmode``, will be
+  replaced by a new ``uint32_t mtu`` field of ``struct rte_eth_conf`` in v21.11.
+  The new ``mtu`` field will be used to configure the initial device MTU via
+  ``rte_eth_dev_configure()`` API.
+  Later MTU can be changed by ``rte_eth_dev_set_mtu()`` API as done now.
+  The existing ``(struct rte_eth_dev)->data->mtu`` variable will be used to store
+  the configured ``mtu`` value,
+  and this new ``(struct rte_eth_dev)->data->dev_conf.mtu`` variable will
+  be used to store the user configuration request.
+  Unlike ``max_rx_pkt_len``, which was valid only when ``JUMBO_FRAME`` enabled,
+  ``mtu`` field will be always valid.
+  When ``mtu`` config is not provided by the application, default ``RTE_ETHER_MTU``
+  value will be used.
+  ``(struct rte_eth_dev)->data->mtu`` should be updated after MTU set successfully,
+  either by ``rte_eth_dev_configure()`` or ``rte_eth_dev_set_mtu()``.
 
-* dpaa2: removal of ``rte_dpaa2_memsegs`` structure which has been replaced
-  by a pa-va search library. This structure was earlier being used for holding
-  memory segments used by dpaa2 driver for faster pa->va translation. This
-  structure would be made internal (or removed if all dependencies are cleared)
-  in future releases.
+  An application may need to configure device for a specific Rx packet size, like for
+  cases ``DEV_RX_OFFLOAD_SCATTER`` is not supported and device received packet size
+  can't be bigger than Rx buffer size.
+  To cover these cases an application needs to know the device packet overhead to be
+  able to calculate the ``mtu`` corresponding to a Rx buffer size, for this
+  ``(struct rte_eth_dev_info).max_rx_pktlen`` will be kept,
+  the device packet overhead can be calculated as:
+  ``(struct rte_eth_dev_info).max_rx_pktlen - (struct rte_eth_dev_info).max_mtu``
 
-* ethdev: the legacy filter API, including
-  ``rte_eth_dev_filter_supported()``, ``rte_eth_dev_filter_ctrl()`` as well
-  as filter types MACVLAN, ETHERTYPE, FLEXIBLE, SYN, NTUPLE, TUNNEL, FDIR,
-  HASH and L2_TUNNEL, is superseded by the generic flow API (rte_flow) in
-  PMDs that implement the latter.
-  Target release for removal of the legacy API will be defined once most
-  PMDs have switched to rte_flow.
+* ethdev: ``rx_descriptor_done`` dev_ops and ``rte_eth_rx_descriptor_done``
+  will be removed in 21.11.
+  Existing ``rte_eth_rx_descriptor_status`` and ``rte_eth_tx_descriptor_status``
+  APIs can be used as replacement.
 
-* cryptodev: support for using IV with all sizes is added, J0 still can
-  be used but only when IV length in following structs ``rte_crypto_auth_xform``,
-  ``rte_crypto_aead_xform`` is set to zero. When IV length is greater or equal
-  to one it means it represents IV, when is set to zero it means J0 is used
-  directly, in this case 16 bytes of J0 need to be passed.
+* ethdev: The port mirroring API can be replaced with a more fine grain flow API.
+  The structs ``rte_eth_mirror_conf``, ``rte_eth_vlan_mirror`` and the functions
+  ``rte_eth_mirror_rule_set``, ``rte_eth_mirror_rule_reset`` will be marked
+  as deprecated in DPDK 20.11, along with the associated macros ``ETH_MIRROR_*``.
+  This API will be fully removed in DPDK 21.11.
+
+* ethdev: Attribute ``shared`` of the ``struct rte_flow_action_count``
+  is deprecated and will be removed in DPDK 21.11. Shared counters should
+  be managed using shared actions API (``rte_flow_shared_action_create`` etc).
+
+* ethdev: The flow API matching pattern structures, ``struct rte_flow_item_*``,
+  should start with relevant protocol header.
+  Some matching pattern structures implements this by duplicating protocol header
+  fields in the struct. To clarify the intention and to be sure protocol header
+  is intact, will replace those fields with relevant protocol header struct.
+  In v21.02 both individual protocol header fields and the protocol header struct
+  will be added as union, target is switch usage to the protocol header by time.
+  In v21.11 LTS, protocol header fields will be cleaned and only protocol header
+  struct will remain.
+
+* ethdev: Queue specific stats fields will be removed from ``struct rte_eth_stats``.
+  Mentioned fields are: ``q_ipackets``, ``q_opackets``, ``q_ibytes``, ``q_obytes``,
+  ``q_errors``.
+  Instead queue stats will be received via xstats API. Current method support
+  will be limited to maximum 256 queues.
+  Also compile time flag ``RTE_ETHDEV_QUEUE_STAT_CNTRS`` will be removed.
 
 * sched: To allow more traffic classes, flexible mapping of pipe queues to
   traffic classes, and subport level configuration of pipes and queues
@@ -74,7 +122,6 @@ Deprecation Notices
 * metrics: The function ``rte_metrics_init`` will have a non-void return
   in order to notify errors instead of calling ``rte_exit``.
 
-* power: ``rte_power_set_env`` function will no longer return 0 on attempt
-  to set new power environment if power environment was already initialized.
-  In this case the function will return -1 unless the environment is unset first
-  (using ``rte_power_unset_env``). Other function usage scenarios will not change.
+* cmdline: ``cmdline`` structure will be made opaque to hide platform-specific
+  content. On Linux and FreeBSD, supported prior to DPDK 20.11,
+  original structure will be kept until DPDK 21.11.

@@ -248,19 +248,32 @@ print_link_info(struct link *link, char *out, size_t out_size)
 	struct rte_ether_addr mac_addr;
 	struct rte_eth_link eth_link;
 	uint16_t mtu;
+	int ret;
 
 	memset(&stats, 0, sizeof(stats));
 	rte_eth_stats_get(link->port_id, &stats);
 
-	rte_eth_macaddr_get(link->port_id, &mac_addr);
-	rte_eth_link_get(link->port_id, &eth_link);
+	ret = rte_eth_macaddr_get(link->port_id, &mac_addr);
+	if (ret != 0) {
+		snprintf(out, out_size, "\n%s: MAC address get failed: %s",
+			 link->name, rte_strerror(-ret));
+		return;
+	}
+
+	ret = rte_eth_link_get(link->port_id, &eth_link);
+	if (ret < 0) {
+		snprintf(out, out_size, "\n%s: link get failed: %s",
+			 link->name, rte_strerror(-ret));
+		return;
+	}
+
 	rte_eth_dev_get_mtu(link->port_id, &mtu);
 
 	snprintf(out, out_size,
 		"\n"
 		"%s: flags=<%s> mtu %u\n"
 		"\tether %02X:%02X:%02X:%02X:%02X:%02X rxqueues %u txqueues %u\n"
-		"\tport# %u  speed %u Mbps\n"
+		"\tport# %u  speed %s\n"
 		"\tRX packets %" PRIu64"  bytes %" PRIu64"\n"
 		"\tRX errors %" PRIu64"  missed %" PRIu64"  no-mbuf %" PRIu64"\n"
 		"\tTX packets %" PRIu64"  bytes %" PRIu64"\n"
@@ -274,7 +287,7 @@ print_link_info(struct link *link, char *out, size_t out_size)
 		link->n_rxq,
 		link->n_txq,
 		link->port_id,
-		eth_link.link_speed,
+		rte_eth_link_speed_to_str(eth_link.link_speed),
 		stats.ipackets,
 		stats.ibytes,
 		stats.ierrors,
@@ -388,7 +401,7 @@ cmd_tmgr_subport_profile(char **tokens,
 	char *out,
 	size_t out_size)
 {
-	struct rte_sched_subport_params p;
+	struct rte_sched_subport_profile_params subport_profile;
 	int status, i;
 
 	if (n_tokens != 19) {
@@ -396,28 +409,29 @@ cmd_tmgr_subport_profile(char **tokens,
 		return;
 	}
 
-	if (parser_read_uint32(&p.tb_rate, tokens[3]) != 0) {
+	if (parser_read_uint64(&subport_profile.tb_rate, tokens[3]) != 0) {
 		snprintf(out, out_size, MSG_ARG_INVALID, "tb_rate");
 		return;
 	}
 
-	if (parser_read_uint32(&p.tb_size, tokens[4]) != 0) {
+	if (parser_read_uint64(&subport_profile.tb_size, tokens[4]) != 0) {
 		snprintf(out, out_size, MSG_ARG_INVALID, "tb_size");
 		return;
 	}
 
 	for (i = 0; i < RTE_SCHED_TRAFFIC_CLASSES_PER_PIPE; i++)
-		if (parser_read_uint32(&p.tc_rate[i], tokens[5 + i]) != 0) {
+		if (parser_read_uint64(&subport_profile.tc_rate[i],
+				tokens[5 + i]) != 0) {
 			snprintf(out, out_size, MSG_ARG_INVALID, "tc_rate");
 			return;
 		}
 
-	if (parser_read_uint32(&p.tc_period, tokens[18]) != 0) {
+	if (parser_read_uint64(&subport_profile.tc_period, tokens[18]) != 0) {
 		snprintf(out, out_size, MSG_ARG_INVALID, "tc_period");
 		return;
 	}
 
-	status = tmgr_subport_profile_add(&p);
+	status = tmgr_subport_profile_add(&subport_profile);
 	if (status != 0) {
 		snprintf(out, out_size, MSG_CMD_FAIL, tokens[0]);
 		return;
@@ -448,33 +462,31 @@ cmd_tmgr_pipe_profile(char **tokens,
 		return;
 	}
 
-	if (parser_read_uint32(&p.tb_rate, tokens[3]) != 0) {
+	if (parser_read_uint64(&p.tb_rate, tokens[3]) != 0) {
 		snprintf(out, out_size, MSG_ARG_INVALID, "tb_rate");
 		return;
 	}
 
-	if (parser_read_uint32(&p.tb_size, tokens[4]) != 0) {
+	if (parser_read_uint64(&p.tb_size, tokens[4]) != 0) {
 		snprintf(out, out_size, MSG_ARG_INVALID, "tb_size");
 		return;
 	}
 
 	for (i = 0; i < RTE_SCHED_TRAFFIC_CLASSES_PER_PIPE; i++)
-		if (parser_read_uint32(&p.tc_rate[i], tokens[5 + i]) != 0) {
+		if (parser_read_uint64(&p.tc_rate[i], tokens[5 + i]) != 0) {
 			snprintf(out, out_size, MSG_ARG_INVALID, "tc_rate");
 			return;
 		}
 
-	if (parser_read_uint32(&p.tc_period, tokens[18]) != 0) {
+	if (parser_read_uint64(&p.tc_period, tokens[18]) != 0) {
 		snprintf(out, out_size, MSG_ARG_INVALID, "tc_period");
 		return;
 	}
 
-#ifdef RTE_SCHED_SUBPORT_TC_OV
 	if (parser_read_uint8(&p.tc_ov_weight, tokens[19]) != 0) {
 		snprintf(out, out_size, MSG_ARG_INVALID, "tc_ov_weight");
 		return;
 	}
-#endif
 
 	for (i = 0; i < RTE_SCHED_BE_QUEUES_PER_PIPE; i++)
 		if (parser_read_uint8(&p.wrr_weights[i], tokens[20 + i]) != 0) {
@@ -494,10 +506,6 @@ static const char cmd_tmgr_help[] =
 "   rate <rate>\n"
 "   spp <n_subports_per_port>\n"
 "   pps <n_pipes_per_subport>\n"
-"   qsize <qsize_tc0> <qsize_tc1> <qsize_tc2>"
-"   <qsize_tc3> <qsize_tc4> <qsize_tc5> <qsize_tc6>"
-"   <qsize_tc7> <qsize_tc8> <qsize_tc9> <qsize_tc10>"
-"   <qsize_tc11> <qsize_tc12>\n"
 "   fo <frame_overhead>\n"
 "   mtu <mtu>\n"
 "   cpu <cpu_id>\n";
@@ -511,9 +519,8 @@ cmd_tmgr(char **tokens,
 	struct tmgr_port_params p;
 	char *name;
 	struct tmgr_port *tmgr_port;
-	int i;
 
-	if (n_tokens != 28) {
+	if (n_tokens != 14) {
 		snprintf(out, out_size, MSG_ARG_MISMATCH, tokens[0]);
 		return;
 	}
@@ -525,7 +532,7 @@ cmd_tmgr(char **tokens,
 		return;
 	}
 
-	if (parser_read_uint32(&p.rate, tokens[3]) != 0) {
+	if (parser_read_uint64(&p.rate, tokens[3]) != 0) {
 		snprintf(out, out_size, MSG_ARG_INVALID, "rate");
 		return;
 	}
@@ -541,7 +548,7 @@ cmd_tmgr(char **tokens,
 	}
 
 	if (strcmp(tokens[6], "pps") != 0) {
-		snprintf(out, out_size, MSG_ARG_NOT_FOUND, "pps");
+		snprintf(out, out_size, MSG_ARG_NOT_FOUND, "spp");
 		return;
 	}
 
@@ -550,43 +557,32 @@ cmd_tmgr(char **tokens,
 		return;
 	}
 
-	if (strcmp(tokens[8], "qsize") != 0) {
-		snprintf(out, out_size, MSG_ARG_NOT_FOUND, "qsize");
-		return;
-	}
-
-	for (i = 0; i < RTE_SCHED_TRAFFIC_CLASSES_PER_PIPE; i++)
-		if (parser_read_uint16(&p.qsize[i], tokens[9 + i]) != 0) {
-			snprintf(out, out_size, MSG_ARG_INVALID, "qsize");
-			return;
-		}
-
-	if (strcmp(tokens[22], "fo") != 0) {
+	if (strcmp(tokens[8], "fo") != 0) {
 		snprintf(out, out_size, MSG_ARG_NOT_FOUND, "fo");
 		return;
 	}
 
-	if (parser_read_uint32(&p.frame_overhead, tokens[23]) != 0) {
+	if (parser_read_uint32(&p.frame_overhead, tokens[9]) != 0) {
 		snprintf(out, out_size, MSG_ARG_INVALID, "frame_overhead");
 		return;
 	}
 
-	if (strcmp(tokens[24], "mtu") != 0) {
+	if (strcmp(tokens[10], "mtu") != 0) {
 		snprintf(out, out_size, MSG_ARG_NOT_FOUND, "mtu");
 		return;
 	}
 
-	if (parser_read_uint32(&p.mtu, tokens[25]) != 0) {
+	if (parser_read_uint32(&p.mtu, tokens[11]) != 0) {
 		snprintf(out, out_size, MSG_ARG_INVALID, "mtu");
 		return;
 	}
 
-	if (strcmp(tokens[26], "cpu") != 0) {
+	if (strcmp(tokens[12], "cpu") != 0) {
 		snprintf(out, out_size, MSG_ARG_NOT_FOUND, "cpu");
 		return;
 	}
 
-	if (parser_read_uint32(&p.cpu_id, tokens[27]) != 0) {
+	if (parser_read_uint32(&p.cpu_id, tokens[13]) != 0) {
 		snprintf(out, out_size, MSG_ARG_INVALID, "cpu_id");
 		return;
 	}
@@ -2661,7 +2657,7 @@ struct pkt_key_qinq {
 	uint16_t svlan;
 	uint16_t ethertype_cvlan;
 	uint16_t cvlan;
-} __attribute__((__packed__));
+} __rte_packed;
 
 struct pkt_key_ipv4_5tuple {
 	uint8_t time_to_live;
@@ -2671,7 +2667,7 @@ struct pkt_key_ipv4_5tuple {
 	uint32_t da;
 	uint16_t sp;
 	uint16_t dp;
-} __attribute__((__packed__));
+} __rte_packed;
 
 struct pkt_key_ipv6_5tuple {
 	uint16_t payload_length;
@@ -2681,15 +2677,15 @@ struct pkt_key_ipv6_5tuple {
 	uint8_t da[16];
 	uint16_t sp;
 	uint16_t dp;
-} __attribute__((__packed__));
+} __rte_packed;
 
 struct pkt_key_ipv4_addr {
 	uint32_t addr;
-} __attribute__((__packed__));
+} __rte_packed;
 
 struct pkt_key_ipv6_addr {
 	uint8_t addr[16];
-} __attribute__((__packed__));
+} __rte_packed;
 
 static uint32_t
 parse_match(char **tokens,

@@ -6,6 +6,7 @@
 #include <rte_pci.h>
 #include <rte_malloc.h>
 
+#include "ethdev_driver.h"
 #include "base/ixgbe_type.h"
 #include "base/ixgbe_vf.h"
 #include "ixgbe_ethdev.h"
@@ -34,7 +35,7 @@ ixgbe_vf_representor_mac_addr_set(struct rte_eth_dev *ethdev,
 		representor->vf_id, mac_addr);
 }
 
-static void
+static int
 ixgbe_vf_representor_dev_infos_get(struct rte_eth_dev *ethdev,
 	struct rte_eth_dev_info *dev_info)
 {
@@ -76,6 +77,8 @@ ixgbe_vf_representor_dev_infos_get(struct rte_eth_dev *ethdev,
 		representor->pf_ethdev->device->name;
 	dev_info->switch_info.domain_id = representor->switch_domain_id;
 	dev_info->switch_info.port_id = representor->vf_id;
+
+	return 0;
 }
 
 static int ixgbe_vf_representor_dev_configure(
@@ -110,8 +113,9 @@ static int ixgbe_vf_representor_dev_start(__rte_unused struct rte_eth_dev *dev)
 	return 0;
 }
 
-static void ixgbe_vf_representor_dev_stop(__rte_unused struct rte_eth_dev *dev)
+static int ixgbe_vf_representor_dev_stop(__rte_unused struct rte_eth_dev *dev)
 {
+	return 0;
 }
 
 static int

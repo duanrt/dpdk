@@ -3,9 +3,10 @@
 
 if not is_linux
 	build = false
-	reason = 'only supported on linux'
+	reason = 'only supported on Linux'
 endif
 
+deps += ['common_dpaax']
 sources = files('enetc_ethdev.c',
 		'enetc_rxtx.c')
 

@@ -1,36 +1,54 @@
 # SPDX-License-Identifier: BSD-3-Clause
 # Copyright(c) 2017-2019 Intel Corporation
 
-if is_windows
-	subdir_done()
-endif
+# Defines the order of dependencies evaluation
+subdirs = [
+	'common',
+	'bus',
+	'common/mlx5', # depends on bus.
+	'common/qat', # depends on bus.
+	'mempool', # depends on common and bus.
+	'net',     # depends on common, bus, mempool
+	'raw',     # depends on common, bus and net.
+	'crypto',  # depends on common, bus and mempool (net in future).
+	'compress', # depends on common, bus, mempool.
+	'regex', # depends on common, bus, regexdev.
+	'vdpa',    # depends on common, bus and mempool.
+	'event',   # depends on common, bus, mempool and net.
+	'baseband', # depends on common and bus.
+]
 
-# Defines the order in which the drivers are buit.
-dpdk_driver_classes = ['common',
-	       'bus',
-	       'mempool', # depends on common and bus.
-	       'net',     # depends on common, bus and mempool.
-	       'crypto',  # depends on common, bus and mempool (net in future).
-	       'compress', # depends on common, bus, mempool.
-	       'event',   # depends on common, bus, mempool and net.
-	       'baseband', # depends on common and bus.
-	       'raw']     # depends on common, bus, mempool, net and event.
+disabled_drivers = run_command(list_dir_globs, get_option('disable_drivers'),
+		).stdout().split()
 
 default_cflags = machine_args
+default_cflags += ['-DALLOW_EXPERIMENTAL_API']
+default_cflags += ['-DALLOW_INTERNAL_API']
+
 if cc.has_argument('-Wno-format-truncation')
 	default_cflags += '-Wno-format-truncation'
 endif
 
-foreach class:dpdk_driver_classes
+foreach subpath:subdirs
 	drivers = []
 	std_deps = []
-	config_flag_fmt = '' # format string used to set the value in dpdk_conf
-	driver_name_fmt = '' # format string for driver name, used to name
-	                     # the library, the dependency and to find the
-	                     # version file for linking
 
-	subdir(class)
-	class_drivers = []
+	# subpath can be either "class" or "class/driver"
+	if subpath.contains('/')
+		driver_path = subpath.split('/')
+		class = driver_path[0]
+		drivers += driver_path[1]
+	else
+		class = subpath
+		subdir(class)
+	endif
+
+	# save class name on first occurrence
+	if not dpdk_driver_classes.contains(class)
+		dpdk_driver_classes += class
+	endif
+	# get already enabled drivers of the same class
+	enabled_drivers = get_variable(class + '_drivers', [])
 
 	foreach drv:drivers
 		drv_path = join_paths(class, drv)
@@ -39,9 +57,8 @@ foreach class:dpdk_driver_classes
 		build = true # set to false to disable, e.g. missing deps
 		reason = '<unknown reason>' # set if build == false to explain
 		name = drv
-		version = 1
-		allow_experimental_apis = false
 		sources = []
+		headers = []
 		objs = []
 		cflags = default_cflags
 		includes = [include_directories(drv_path)]
@@ -56,8 +73,30 @@ foreach class:dpdk_driver_classes
 		ext_deps = []
 		pkgconfig_extra_libs = []
 
-		# pull in driver directory which should assign to each of the above
-		subdir(drv_path)
+		if disabled_drivers.contains(drv_path)
+			build = false
+			reason = 'explicitly disabled via build config'
+		else
+			# pull in driver directory which should update all the local variables
+			subdir(drv_path)
+		endif
+
+		if build
+			# get dependency objs from strings
+			shared_deps = ext_deps
+			static_deps = ext_deps
+			foreach d:deps
+				if not is_variable('shared_rte_' + d)
+					build = false
+					reason = 'missing internal dependency, "@0@"'.format(d)
+					message('Disabling @1@ [@2@]: missing internal dependency "@0@"'
+							.format(d, name, 'drivers/' + drv_path))
+				else
+					shared_deps += [get_variable('shared_rte_' + d)]
+					static_deps += [get_variable('static_rte_' + d)]
+				endif
+			endforeach
+		endif
 
 		if not build
 			# some driver directories are placeholders which
@@ -69,29 +108,13 @@ foreach class:dpdk_driver_classes
 						'_disable_reason', reason)
 			endif
 		else
-			class_drivers += name
+			enabled_drivers += name
+			lib_name = '_'.join(['rte', class, name])
+			dpdk_conf.set(lib_name.to_upper(), 1)
 
-			dpdk_conf.set(config_flag_fmt.format(name.to_upper()),1)
-			lib_name = driver_name_fmt.format(name)
-
-			if allow_experimental_apis
-				cflags += '-DALLOW_EXPERIMENTAL_API'
-			endif
-
-			# get dependency objs from strings
-			shared_objs = []
-			static_objs = []
-			foreach d:deps
-				if not is_variable('shared_rte_' + d)
-					error('Missing dependency ' + d +
-						' for driver ' + lib_name)
-				endif
-				shared_objs += [get_variable('shared_rte_' + d)]
-				static_objs += [get_variable('static_rte_' + d)]
-			endforeach
-			shared_objs += ext_deps
-			static_objs += ext_deps
 			dpdk_extra_ldflags += pkgconfig_extra_libs
+
+			install_headers(headers)
 
 			# generate pmdinfo sources by building a temporary
 			# lib and then running pmdinfogen on the contents of
@@ -101,45 +124,72 @@ foreach class:dpdk_driver_classes
 			tmp_lib = static_library('tmp_' + lib_name,
 					sources,
 					include_directories: includes,
-					dependencies: static_objs,
+					dependencies: static_deps,
 					c_args: cflags)
 			objs += tmp_lib.extract_all_objects()
 			sources = custom_target(out_filename,
 					command: [pmdinfo, tmp_lib.full_path(),
 						'@OUTPUT@', pmdinfogen],
 					output: out_filename,
-					depends: [pmdinfogen, tmp_lib])
-
-			if get_option('per_library_versions')
-				lib_version = '@0@.1'.format(version)
-				so_version = '@0@'.format(version)
-			else
-				lib_version = major_version
-				so_version = major_version
-			endif
+					depends: [tmp_lib])
 
 			# now build the static driver
 			static_lib = static_library(lib_name,
 				sources,
 				objects: objs,
 				include_directories: includes,
-				dependencies: static_objs,
+				dependencies: static_deps,
 				c_args: cflags,
 				install: true)
 
 			# now build the shared driver
-			version_map = '@0@/@1@/@2@_version.map'.format(
+			version_map = '@0@/@1@/version.map'.format(
 					meson.current_source_dir(),
-					drv_path, lib_name)
+					drv_path)
+			implib = 'lib' + lib_name + '.dll.a'
+
+			def_file = custom_target(lib_name + '_def',
+				command: [map_to_win_cmd, '@INPUT@', '@OUTPUT@'],
+				input: version_map,
+				output: '@0@_exports.def'.format(lib_name))
+
+			mingw_map = custom_target(lib_name + '_mingw',
+				command: [map_to_win_cmd, '@INPUT@', '@OUTPUT@'],
+				input: version_map,
+				output: '@0@_mingw.map'.format(lib_name))
+
+			lk_deps = [version_map, def_file, mingw_map]
+			if is_windows
+				if is_ms_linker
+					lk_args = ['-Wl,/def:' + def_file.full_path()]
+					if meson.version().version_compare('<0.54.0')
+						lk_args += ['-Wl,/implib:drivers\\' + implib]
+					endif
+				else
+					lk_args = ['-Wl,--version-script=' + mingw_map.full_path()]
+				endif
+			else
+				lk_args = ['-Wl,--version-script=' + version_map]
+				# on unix systems check the output of the
+				# check-symbols.sh script, using it as a
+				# dependency of the .so build
+				lk_deps += custom_target(lib_name + '.sym_chk',
+					command: [check_symbols,
+						version_map, '@INPUT@'],
+					capture: true,
+					input: static_lib,
+					output: lib_name + '.sym_chk')
+			endif
+
 			shared_lib = shared_library(lib_name,
 				sources,
 				objects: objs,
 				include_directories: includes,
-				dependencies: shared_objs,
+				dependencies: shared_deps,
 				c_args: cflags,
-				link_args: '-Wl,--version-script=' + version_map,
-				link_depends: version_map,
-				version: lib_version,
+				link_args: lk_args,
+				link_depends: lk_deps,
+				version: abi_version,
 				soversion: so_version,
 				install: true,
 				install_dir: driver_install_path)
@@ -148,17 +198,20 @@ foreach class:dpdk_driver_classes
 			# testpmd or other built-in apps can find it if necessary
 			shared_dep = declare_dependency(link_with: shared_lib,
 					include_directories: includes,
-					dependencies: shared_objs)
-			static_dep = declare_dependency(link_with: static_lib,
+					dependencies: shared_deps)
+			static_dep = declare_dependency(
 					include_directories: includes,
-					dependencies: static_objs)
+					dependencies: static_deps)
 
 			dpdk_drivers += static_lib
 
 			set_variable('shared_@0@'.format(lib_name), shared_dep)
 			set_variable('static_@0@'.format(lib_name), static_dep)
+			dependency_name = ''.join(lib_name.split('rte_'))
+			message('drivers/@0@: Defining dependency "@1@"'.format(
+					drv_path, dependency_name))
 		endif # build
 	endforeach
 
-	set_variable(class + '_drivers', class_drivers)
+	set_variable(class + '_drivers', enabled_drivers)
 endforeach

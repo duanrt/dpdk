@@ -20,12 +20,12 @@
 #include <rte_log.h>
 #include <rte_pci.h>
 #include <rte_bus_pci.h>
-#include <rte_eal_memconfig.h>
 #include <rte_common.h>
 #include <rte_malloc.h>
 
 #include "eal_filesystem.h"
 #include "pci_init.h"
+#include "private.h"
 
 void *pci_map_addr = NULL;
 
@@ -249,7 +249,7 @@ pci_uio_alloc_resource(struct rte_pci_device *dev,
 		goto error;
 	}
 
-	if (dev->kdrv == RTE_KDRV_IGB_UIO)
+	if (dev->kdrv == RTE_PCI_KDRV_IGB_UIO)
 		dev->intr_handle.type = RTE_INTR_HANDLE_UIO;
 	else {
 		dev->intr_handle.type = RTE_INTR_HANDLE_UIO_INTX;
@@ -346,11 +346,13 @@ pci_uio_map_resource_by_index(struct rte_pci_device *dev, int res_idx,
 	mapaddr = pci_map_resource(pci_map_addr, fd, 0,
 			(size_t)dev->mem_resource[res_idx].len, 0);
 	close(fd);
-	if (mapaddr == MAP_FAILED)
+	if (mapaddr == NULL)
 		goto error;
 
 	pci_map_addr = RTE_PTR_ADD(mapaddr,
 			(size_t)dev->mem_resource[res_idx].len);
+
+	pci_map_addr = RTE_PTR_ALIGN(pci_map_addr, sysconf(_SC_PAGE_SIZE));
 
 	maps[map_idx].phaddr = dev->mem_resource[res_idx].phys_addr;
 	maps[map_idx].size = dev->mem_resource[res_idx].len;
@@ -375,6 +377,12 @@ pci_uio_ioport_map(struct rte_pci_device *dev, int bar,
 	char filename[PATH_MAX];
 	int uio_num;
 	unsigned long start;
+
+	if (rte_eal_iopl_init() != 0) {
+		RTE_LOG(ERR, EAL, "%s(): insufficient ioport permissions for PCI device %s\n",
+			__func__, dev->name);
+		return -1;
+	}
 
 	uio_num = pci_get_uio_dev(dev, dirname, sizeof(dirname), 0);
 	if (uio_num < 0)

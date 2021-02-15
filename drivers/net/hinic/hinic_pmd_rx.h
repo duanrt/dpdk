@@ -35,7 +35,11 @@ struct hinic_rq_cqe {
 	u32 rss_hash;
 
 	u32 rsvd[4];
+#if defined(RTE_ARCH_ARM64)
+} __rte_cache_aligned;
+#else
 };
+#endif
 
 struct hinic_rq_cqe_sect {
 	struct hinic_sge	sge;
@@ -82,6 +86,8 @@ struct hinic_rxq {
 	u16 rx_free_thresh;
 	u16 rxinfo_align_end;
 
+	u32 socket_id;
+
 	unsigned long status;
 	struct hinic_rxq_stats rxq_stats;
 
@@ -105,7 +111,7 @@ void hinic_free_rx_resources(struct hinic_rxq *rxq);
 
 u16 hinic_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts, u16 nb_pkts);
 
-void hinic_free_all_rx_skbs(struct hinic_rxq *rxq);
+void hinic_free_all_rx_mbufs(struct hinic_rxq *rxq);
 
 void hinic_rx_alloc_pkts(struct hinic_rxq *rxq);
 
@@ -121,7 +127,8 @@ void hinic_rx_remove_configure(struct rte_eth_dev *dev);
 
 void hinic_get_func_rx_buf_size(struct hinic_nic_dev *nic_dev);
 
-int hinic_create_rq(struct hinic_hwdev *hwdev, u16 q_id, u16 rq_depth);
+int hinic_create_rq(struct hinic_hwdev *hwdev, u16 q_id,
+			u16 rq_depth, unsigned int socket_id);
 
 void hinic_destroy_rq(struct hinic_hwdev *hwdev, u16 q_id);
 

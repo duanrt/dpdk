@@ -23,18 +23,19 @@ sources = [
 	'opae_eth_group.c',
 ]
 
-error_cflags = ['-Wno-sign-compare', '-Wno-unused-value',
-		'-Wno-format', '-Wno-error=format-security',
-		'-Wno-strict-aliasing', '-Wno-unused-but-set-variable'
-]
-c_args = cflags
-foreach flag: error_cflags
-	if cc.has_argument(flag)
-		c_args += flag
-	endif
-endforeach
+rtdep = dependency('librt', required: false)
+if not rtdep.found()
+	rtdep = cc.find_library('librt', required: false)
+endif
+if not rtdep.found()
+	build = false
+	reason = 'missing dependency, "librt"'
+	subdir_done()
+endif
+
+ext_deps += rtdep
 
 base_lib = static_library('ifpga_rawdev_base', sources,
 	dependencies: static_rte_eal,
-	c_args: c_args)
+	c_args: cflags)
 base_objs = base_lib.extract_all_objects()

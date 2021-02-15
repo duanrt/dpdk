@@ -14,6 +14,7 @@
 #include <rte_byteorder.h>
 #include <rte_log.h>
 #include <rte_string_fns.h>
+#include <rte_power_guest_channel.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -24,9 +25,27 @@ enum power_management_env {PM_ENV_NOT_SET, PM_ENV_ACPI_CPUFREQ, PM_ENV_KVM_VM,
 		PM_ENV_PSTATE_CPUFREQ};
 
 /**
+ * @warning
+ * @b EXPERIMENTAL: this API may change, or be removed, without prior notice
+ *
+ * Check if a specific power management environment type is supported on a
+ * currently running system.
+ *
+ * @param env
+ *   The environment type to check support for.
+ *
+ * @return
+ *   - 1 if supported
+ *   - 0 if unsupported
+ *   - -1 if error, with rte_errno indicating reason for error.
+ */
+__rte_experimental
+int rte_power_check_env_supported(enum power_management_env env);
+
+/**
  * Set the default power management implementation. If this is not called prior
  * to rte_power_init(), then auto-detect of the environment will take place.
- * It is thread safe. New env can be set only in unitialized state
+ * It is thread safe. New env can be set only in uninitialized state
  * (thus rte_power_unset_env must be called if different env was already set).
  *
  * @param env
